@@ -4,6 +4,7 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 
 import connectDB from "./config/db.js";
+import getAllowedOrigins from "./config/allowedOrigins.js";
 import errorMiddleware from "./middlewares/errorMiddleware.js";
 
 import authRoutes from "./routes/authRoutes.js";
@@ -24,7 +25,7 @@ const app = express();
 // middleware
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "http://localhost:5173",
+    origin: getAllowedOrigins(),
     credentials: true,
   }),
 );
