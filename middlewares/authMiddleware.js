@@ -18,10 +18,7 @@ export const protect = async (req, res, next) => {
       });
     }
 
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET
-    );
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     req.user = await User.findById(decoded.id).select("-password");
 
@@ -33,14 +30,18 @@ export const protect = async (req, res, next) => {
   }
 };
 
+export const adminOnly = (req, res, next) => {
+  if (req.user && req.user.role === "admin") {
+    next();
+  } else {
+    res.status(403).json({
+      message: "Admin access only",
+    });
+  }
+};
+
 export const sellerOnly = (req, res, next) => {
-  if (
-    req.user &&
-    (
-      req.user.role === "seller" ||
-      req.user.role === "admin"
-    )
-  ) {
+  if (req.user && (req.user.role === "seller" || req.user.role === "admin")) {
     next();
   } else {
     res.status(403).json({
@@ -49,15 +50,12 @@ export const sellerOnly = (req, res, next) => {
   }
 };
 
-export const adminOnly = (req, res, next) => {
-  if (
-    req.user &&
-    req.user.role === "admin"
-  ) {
+export const sellerOrAdmin = (req, res, next) => {
+  if (req.user && (req.user.role === "seller" || req.user.role === "admin")) {
     next();
   } else {
     res.status(403).json({
-      message: "Admin access only",
+      message: "Unauthorized. Seller or Admin access only.",
     });
   }
 };

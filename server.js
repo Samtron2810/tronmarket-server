@@ -1,4 +1,6 @@
 import dotenv from "dotenv";
+dotenv.config();
+
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
@@ -15,8 +17,6 @@ import paymentRoutes from "./routes/paymentRoutes.js";
 import uploadRoutes from "./routes/uploadRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
 
-dotenv.config();
-
 // connect database first
 await connectDB();
 
@@ -31,7 +31,16 @@ app.use(
 );
 
 // increase body size limits to allow large uploads (base64 fallback) and form data
-app.use(express.json({ limit: "50mb" }));
+
+// Modify your existing express.json middleware configuration to capture raw body
+app.use(
+  express.json({
+    limit: "50mb",
+    verify: (req, res, buf) => {
+      req.rawBody = buf.toString();
+    },
+  }),
+);
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 app.use(cookieParser());
 

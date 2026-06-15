@@ -1,10 +1,13 @@
 import express from "express";
-import { processPayment } from "../controllers/paymentController.js";
+import {
+  verifyPayment,
+  paystackWebhook,
+} from "../controllers/paymentController.js";
 import { protect } from "../middlewares/authMiddleware.js";
 
 const router = express.Router();
 
-router.use(protect);
-router.post("/", processPayment);
+router.post("/webhook", paystackWebhook);
+router.post("/verify", protect, verifyPayment);
 
 export default router;

@@ -12,11 +12,8 @@ const orderItemSchema = new mongoose.Schema(
       ref: "User",
     },
     name: String,
-
     image: String,
-
     price: Number,
-
     quantity: Number,
   },
   { _id: false },
@@ -38,19 +35,6 @@ const orderSchema = new mongoose.Schema(
       default: 0,
     },
 
-    status: {
-      type: String,
-      enum: [
-        "pending",
-        "paid",
-        "processing",
-        "shipped",
-        "delivered",
-        "cancelled",
-      ],
-      default: "pending",
-    },
-
     shippingAddress: {
       fullName: String,
       phone: String,
@@ -64,12 +48,40 @@ const orderSchema = new mongoose.Schema(
       default: "paystack",
     },
 
+    paymentReference: {
+      type: String,
+    },
+
     isPaid: {
       type: Boolean,
       default: false,
     },
 
     paidAt: Date,
+
+    status: {
+      type: String,
+      enum: [
+        "pending",
+        "paid",
+        "processing",
+        "shipped",
+        "delivered",
+        "cancelled",
+      ],
+      default: "pending",
+    },
+
+    statusHistory: {
+      type: [
+        {
+          status: { type: String },
+          note: { type: String },
+          changedAt: { type: Date, default: Date.now },
+        },
+      ],
+      default: [{ status: "pending", note: "Order placed" }],
+    },
   },
   {
     timestamps: true,
