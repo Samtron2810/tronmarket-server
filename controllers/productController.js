@@ -1,4 +1,11 @@
 import Product from "../models/Product.js";
+import {
+  cacheGet,
+  cacheSet,
+  cacheDel,
+  invalidateProductCache,
+  productCacheKey,
+} from "../config/redis.js";
 
 export const createProduct = async (req, res) => {
   try {
@@ -16,6 +23,9 @@ export const createProduct = async (req, res) => {
 
     const product = await Product.create(payload);
 
+    // Invalidate product cache so new product appears in listings
+    await invalidateProductCache();
+
     res.status(201).json(product);
   } catch (error) {
     res.status(500).json({
@@ -27,6 +37,14 @@ export const createProduct = async (req, res) => {
 export const getProducts = async (req, res) => {
   try {
     const { search, category, min, max, page = 1, limit = 6 } = req.query;
+
+    // Try to get from cache first
+    const cacheKey = productCacheKey(req.query);
+    const cached = await cacheGet(cacheKey);
+
+    if (cached) {
+      return res.json(cached);
+    }
 
     let filter = {};
 
@@ -56,12 +74,17 @@ export const getProducts = async (req, res) => {
 
     const products = await Product.find(filter).skip(skip).limit(perPage);
 
-    res.json({
+    const result = {
       products,
       total,
       page: pageNum,
       pages: Math.ceil(total / perPage),
-    });
+    };
+
+    // Cache for 5 minutes (300 seconds)
+    await cacheSet(cacheKey, result, 300);
+
+    res.json(result);
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -69,13 +92,25 @@ export const getProducts = async (req, res) => {
 
 export const getProduct = async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id);
+    const { id } = req.params;
+
+    // Try single-product cache
+    const cacheKey = `product:single:${id}`;
+    const cached = await cacheGet(cacheKey);
+    if (cached) {
+      return res.json(cached);
+    }
+
+    const product = await Product.findById(id);
 
     if (!product) {
       return res.status(404).json({
         message: "Product not found",
       });
     }
+
+    // Cache single product for 10 minutes
+    await cacheSet(cacheKey, product, 600);
 
     res.json(product);
   } catch (error) {
@@ -119,6 +154,10 @@ export const updateProduct = async (req, res) => {
       },
     );
 
+    // Invalidate both list cache and single-product cache
+    await invalidateProductCache();
+    await cacheDel(`product:single:${req.params.id}`);
+
     res.json(updated);
   } catch (error) {
     res.status(500).json({
@@ -148,6 +187,10 @@ export const deleteProduct = async (req, res) => {
 
     await Product.findByIdAndDelete(req.params.id);
 
+    // Invalidate cache
+    await invalidateProductCache();
+    await cacheDel(`product:single:${req.params.id}`);
+
     res.json({ message: "Product deleted" });
   } catch (error) {
     res.status(500).json({
@@ -158,7 +201,17 @@ export const deleteProduct = async (req, res) => {
 
 export const getMyProducts = async (req, res) => {
   try {
+    // Seller's own products — cache per seller
+    const cacheKey = `product:seller:${req.user._id}`;
+    const cached = await cacheGet(cacheKey);
+    if (cached) {
+      return res.json(cached);
+    }
+
     const products = await Product.find({ seller: req.user._id });
+
+    // Cache for 5 minutes
+    await cacheSet(cacheKey, products, 300);
 
     res.json(products);
   } catch (error) {

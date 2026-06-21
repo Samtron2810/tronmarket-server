@@ -1,5 +1,6 @@
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
+import { isTokenBlacklisted } from "../config/redis.js";
 
 export const protect = async (req, res, next) => {
   try {
@@ -15,6 +16,14 @@ export const protect = async (req, res, next) => {
     if (!token) {
       return res.status(401).json({
         message: "Not authorized",
+      });
+    }
+
+    // Check if token has been blacklisted (logged out)
+    const blacklisted = await isTokenBlacklisted(token);
+    if (blacklisted) {
+      return res.status(401).json({
+        message: "Token expired. Please log in again.",
       });
     }
 

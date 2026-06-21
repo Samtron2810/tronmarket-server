@@ -1,14 +1,11 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
+import { blacklistToken } from "../config/redis.js";
 
 export const registerUser = async (req, res) => {
   try {
     const { name, email, password } = req.body;
-
-    if (!name || !email || !password) {
-      return res.status(400).json({ message: "All fields required" });
-    }
 
     const userExists = await User.findOne({ email });
     if (userExists)
@@ -54,8 +51,15 @@ export const loginUser = async (req, res) => {
 
 export const logoutUser = async (req, res) => {
   try {
-    // For stateless JWT, logout is client-sided. This endpoint exists for parity.
-    res.json({ message: "Logged out" });
+    // Blacklist the current token in Redis so it can't be reused
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      const token = authHeader.split(" ")[1];
+      // Blacklist for 7 days (matching JWT expiry)
+      await blacklistToken(token, 7 * 24 * 60 * 60);
+    }
+
+    res.json({ message: "Logged out successfully" });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

@@ -17,33 +17,60 @@ import {
   adminOnly,
   sellerOrAdmin,
 } from "../middlewares/authMiddleware.js";
+import { validate } from "../middlewares/validate.js";
+import {
+  createOrderSchema,
+  updateOrderStatusSchema,
+} from "../validations/orderSchemas.js";
+import { checkoutLimiter } from "../middlewares/rateLimiter.js";
 
 const router = express.Router();
 
-router.post("/", protect, createOrder);
+// POST /api/orders — Protected, rate limited, Zod validates shipping address
+router.post(
+  "/",
+  protect,
+  checkoutLimiter,
+  validate(createOrderSchema),
+  createOrder,
+);
 
+// GET /api/orders/my-orders — Protected
 router.get("/my-orders", protect, getMyOrders);
 
+// GET /api/orders/seller/orders — Seller/Admin
 router.get("/seller/orders", protect, sellerOrAdmin, getSellerOrders);
 
+// GET /api/orders — Admin only
 router.get("/", protect, adminOnly, getOrders);
 
+// GET /api/orders/:id — Protected
 router.get("/:id", protect, getOrderById);
 
+// PUT /api/orders/:id/cancel — Protected (customer cancels own order)
 router.put("/:id/cancel", protect, cancelOrder);
 
-router.put("/:id/status", protect, sellerOrAdmin, updateOrderStatus);
+// PUT /api/orders/:id/status — Seller/Admin, Zod validates
+router.put(
+  "/:id/status",
+  protect,
+  sellerOrAdmin,
+  validate(updateOrderStatusSchema),
+  updateOrderStatus,
+);
 
-// 1. Customer confirms everything is perfect
+// PUT /api/orders/:id/deliver — Customer confirms delivery
 router.put("/:id/deliver", protect, confirmDelivery);
-// 2. Seller bypasses a silent/dishonest buyer (uses your sellerOrAdmin middleware)
+
+// PUT /api/orders/:id/seller-delivery-claim — Seller/Admin
 router.put(
   "/:id/seller-delivery-claim",
   protect,
   sellerOrAdmin,
   sellerDeliveryClaim,
 );
-// 3. Admin shuts down the entire transaction file permanently
+
+// PUT /api/orders/:id/complete — Admin only
 router.put("/:id/complete", protect, adminOnly, completeOrderManually);
 
 export default router;

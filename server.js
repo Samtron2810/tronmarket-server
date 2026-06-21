@@ -6,6 +6,7 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 
 import connectDB from "./config/db.js";
+import { connectRedis } from "./config/redis.js";
 import getAllowedOrigins from "./config/allowedOrigins.js";
 import errorMiddleware from "./middlewares/errorMiddleware.js";
 
@@ -19,6 +20,9 @@ import adminRoutes from "./routes/adminRoutes.js";
 
 // connect database first
 await connectDB();
+
+// connect Redis (non-blocking — app works without it)
+connectRedis().catch(() => {});
 
 const app = express();
 
