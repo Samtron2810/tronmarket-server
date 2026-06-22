@@ -1,5 +1,5 @@
 /**
- * Express middleware factory for Zod schema validation.
+ * Express middleware factory for Zod v4 schema validation.
  *
  * Usage:
  *   import { validate } from "../middlewares/validate.js";
@@ -16,13 +16,23 @@ export function validate(schema, source = "body") {
     const result = schema.safeParse(req[source]);
 
     if (!result.success) {
-      const errors = result.error.issues.map((issue) => ({
-        field: issue.path.join("."),
+      // Zod v4: errors live on result.error.issues
+      const issues = result.error?.issues ?? [];
+      const errors = issues.map((issue) => ({
+        field: Array.isArray(issue.path)
+          ? issue.path.join(".")
+          : String(issue.path ?? ""),
         message: issue.message,
       }));
 
+      // Fallback: if issues is empty, surface the raw error message
+      const message =
+        errors.length > 0
+          ? errors.map((e) => e.message).join(", ")
+          : result.error?.message || "Validation failed";
+
       return res.status(400).json({
-        message: "Validation failed",
+        message,
         errors,
       });
     }

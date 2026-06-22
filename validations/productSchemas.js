@@ -2,27 +2,27 @@ import { z } from "zod";
 
 export const createProductSchema = z.object({
   name: z
-    .string({ required_error: "Product name is required" })
+    .string({ error: "Product name is required" })
     .trim()
-    .min(2, "Name must be at least 2 characters")
-    .max(200, "Name is too long"),
+    .min(2, { error: "Name must be at least 2 characters" })
+    .max(200, { error: "Name is too long" }),
   description: z
-    .string({ required_error: "Description is required" })
+    .string({ error: "Description is required" })
     .trim()
-    .min(10, "Description must be at least 10 characters"),
+    .min(10, { error: "Description must be at least 10 characters" }),
   price: z
-    .number({ required_error: "Price is required" })
-    .positive("Price must be a positive number")
-    .max(999999999, "Price is too high"),
+    .number({ error: "Price is required" })
+    .positive({ error: "Price must be a positive number" })
+    .max(999999999, { error: "Price is too high" }),
   category: z
-    .string({ required_error: "Category is required" })
+    .string({ error: "Category is required" })
     .trim()
-    .min(2, "Category is required"),
+    .min(2, { error: "Category is required" }),
   brand: z.string().trim().optional().default(""),
   stock: z
-    .number({ required_error: "Stock is required" })
-    .int("Stock must be a whole number")
-    .nonnegative("Stock cannot be negative")
+    .number({ error: "Stock is required" })
+    .int({ error: "Stock must be a whole number" })
+    .nonnegative({ error: "Stock cannot be negative" })
     .default(0),
   image: z.string().trim().optional().default(""),
   images: z.array(z.string()).optional().default([]),

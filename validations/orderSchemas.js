@@ -2,25 +2,25 @@ import { z } from "zod";
 
 export const shippingAddressSchema = z.object({
   fullName: z
-    .string({ required_error: "Full name is required" })
+    .string({ error: "Full name is required" })
     .trim()
-    .min(2, "Full name must be at least 2 characters"),
+    .min(2, { error: "Full name must be at least 2 characters" }),
   phone: z
-    .string({ required_error: "Phone number is required" })
+    .string({ error: "Phone number is required" })
     .trim()
-    .min(5, "Invalid phone number"),
+    .min(5, { error: "Invalid phone number" }),
   address: z
-    .string({ required_error: "Address is required" })
+    .string({ error: "Address is required" })
     .trim()
-    .min(5, "Address must be at least 5 characters"),
+    .min(5, { error: "Address must be at least 5 characters" }),
   city: z
-    .string({ required_error: "City is required" })
+    .string({ error: "City is required" })
     .trim()
-    .min(2, "City must be at least 2 characters"),
+    .min(2, { error: "City must be at least 2 characters" }),
   state: z
-    .string({ required_error: "State is required" })
+    .string({ error: "State is required" })
     .trim()
-    .min(2, "State must be at least 2 characters"),
+    .min(2, { error: "State must be at least 2 characters" }),
 });
 
 export const createOrderSchema = z.object({
@@ -29,8 +29,17 @@ export const createOrderSchema = z.object({
 
 export const updateOrderStatusSchema = z.object({
   status: z.enum(
-    ["pending", "paid", "processing", "shipped", "delivered", "cancelled"],
-    { message: "Invalid order status" },
+    [
+      "pending",
+      "paid",
+      "processing",
+      "shipped",
+      "delivered",
+      "cancelled",
+      "completed",
+      "delivery-claimed",
+    ],
+    { error: "Invalid order status" },
   ),
   note: z.string().trim().optional(),
 });

@@ -44,6 +44,15 @@ export const createOrder = async (req, res) => {
       statusHistory: [{ status: "pending", note: "Order placed" }],
     });
 
+    // Decrement stock for each ordered product
+    await Promise.all(
+      orderItems.map((item) =>
+        Product.findByIdAndUpdate(item.product, {
+          $inc: { stock: -item.quantity },
+        }),
+      ),
+    );
+
     cart.items = [];
     await cart.save();
 
@@ -111,6 +120,23 @@ export const updateOrderStatus = async (req, res) => {
 
     const { status, note } = req.body;
 
+    // Enforce valid forward-only status transitions
+    const validTransitions = {
+      pending: ["processing", "cancelled"],
+      paid: ["processing", "shipped", "cancelled"],
+      processing: ["shipped", "cancelled"],
+      shipped: ["delivered", "delivery-claimed"],
+      "delivery-claimed": ["delivered", "completed"],
+      delivered: ["completed"],
+    };
+
+    const allowed = validTransitions[order.status];
+    if (!allowed || !allowed.includes(status)) {
+      return res.status(400).json({
+        message: `Cannot transition order from "${order.status}" to "${status}"`,
+      });
+    }
+
     order.status = status;
     order.statusHistory.push({ status, note });
 
@@ -140,11 +166,25 @@ export const getSellerOrders = async (req, res) => {
 
 export const getOrders = async (req, res) => {
   try {
-    const orders = await Order.find({})
-      .populate("user", "name email")
-      .sort("-createdAt");
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, parseInt(req.query.limit) || 20);
+    const skip = (page - 1) * limit;
 
-    res.json(orders);
+    const [orders, total] = await Promise.all([
+      Order.find({})
+        .populate("user", "name email")
+        .sort("-createdAt")
+        .skip(skip)
+        .limit(limit),
+      Order.countDocuments({}),
+    ]);
+
+    res.json({
+      orders,
+      page,
+      totalPages: Math.ceil(total / limit),
+      total,
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -215,6 +255,11 @@ export const confirmDelivery = async (req, res) => {
     }
 
     order.status = "delivered";
+    order.deliveredAt = new Date();
+    order.statusHistory.push({
+      status: "delivered",
+      note: "Delivery confirmed by customer",
+    });
     await order.save();
 
     res.json({ success: true, message: "Order marked as delivered", order });
@@ -237,12 +282,12 @@ export const sellerDeliveryClaim = async (req, res) => {
         .json({ message: "You can only claim delivery on shipped orders" });
     }
 
-    // Update status to indicate a claim has been filed
-    order.status = "delivered";
+    // Update status to indicate a claim has been filed — Admin must finalize
+    order.status = "delivery-claimed";
 
     if (order.statusHistory) {
       order.statusHistory.push({
-        status: "delivered",
+        status: "delivery-claimed",
         note: "Delivery claimed by seller. Awaiting Admin finalization.",
       });
     }

@@ -17,6 +17,7 @@ import orderRoutes from "./routes/orderRoutes.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
 import uploadRoutes from "./routes/uploadRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
+import { generalLimiter } from "./middlewares/rateLimiter.js";
 
 // connect database first
 await connectDB();
@@ -47,6 +48,9 @@ app.use(
 );
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 app.use(cookieParser());
+
+// baseline DoS protection for all routes
+app.use(generalLimiter);
 
 // health check
 app.get("/api/health", (req, res) => {
