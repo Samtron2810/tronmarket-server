@@ -19,6 +19,10 @@ const router = express.Router();
 // GET /api/products — Public, cached via Redis
 router.get("/", getProducts);
 
+// GET /api/products/seller/my-products — Seller only, cached per seller
+// MUST be defined before /:id to avoid Express matching "seller" as an :id param
+router.get("/seller/my-products", protect, sellerOnly, getMyProducts);
+
 // GET /api/products/:id — Public, cached via Redis
 router.get("/:id", getProduct);
 
@@ -42,8 +46,5 @@ router.put(
 
 // DELETE /api/products/:id — Seller only, invalidates cache
 router.delete("/:id", protect, sellerOnly, deleteProduct);
-
-// GET /api/products/seller/my-products — Seller only, cached per seller
-router.get("/seller/my-products", protect, sellerOnly, getMyProducts);
 
 export default router;

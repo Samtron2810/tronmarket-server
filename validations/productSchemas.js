@@ -12,7 +12,7 @@ export const createProductSchema = z.object({
     .min(10, { error: "Description must be at least 10 characters" }),
   price: z
     .number({ error: "Price is required" })
-    .positive({ error: "Price must be a positive number" })
+    .nonnegative({ error: "Price must be zero or a positive number" })
     .max(999999999, { error: "Price is too high" }),
   category: z
     .string({ error: "Category is required" })

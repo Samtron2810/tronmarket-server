@@ -157,6 +157,7 @@ export const updateProduct = async (req, res) => {
     // Invalidate both list cache and single-product cache
     await invalidateProductCache();
     await cacheDel(`product:single:${req.params.id}`);
+    await cacheDel(`product:seller:${req.user._id}`);
 
     res.json(updated);
   } catch (error) {
@@ -190,6 +191,7 @@ export const deleteProduct = async (req, res) => {
     // Invalidate cache
     await invalidateProductCache();
     await cacheDel(`product:single:${req.params.id}`);
+    await cacheDel(`product:seller:${req.user._id}`);
 
     res.json({ message: "Product deleted" });
   } catch (error) {
