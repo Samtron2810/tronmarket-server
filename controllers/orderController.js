@@ -64,8 +64,24 @@ export const createOrder = async (req, res) => {
 
 export const getMyOrders = async (req, res) => {
   try {
-    const orders = await Order.find({ user: req.user._id }).sort("-createdAt");
-    res.json(orders);
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(50, parseInt(req.query.limit) || 20);
+    const skip = (page - 1) * limit;
+
+    const [orders, total] = await Promise.all([
+      Order.find({ user: req.user._id })
+        .sort("-createdAt")
+        .skip(skip)
+        .limit(limit),
+      Order.countDocuments({ user: req.user._id }),
+    ]);
+
+    res.json({
+      orders,
+      page,
+      totalPages: Math.ceil(total / limit),
+      total,
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -204,7 +220,13 @@ export const cancelOrder = async (req, res) => {
         .json({ message: "Not authorized to cancel this order" });
     }
 
-    const nonCancellableStates = ["shipped", "delivered", "cancelled"];
+    const nonCancellableStates = [
+      "shipped",
+      "delivery-claimed",
+      "delivered",
+      "completed",
+      "cancelled",
+    ];
     if (nonCancellableStates.includes(order.status)) {
       return res.status(400).json({
         message: `Cannot cancel an order that is already ${order.status}`,
@@ -246,6 +268,13 @@ export const confirmDelivery = async (req, res) => {
     const order = await Order.findById(req.params.id);
 
     if (!order) return res.status(404).json({ message: "Order not found" });
+
+    // Only the customer who placed the order can confirm delivery
+    if (order.user.toString() !== req.user._id.toString()) {
+      return res
+        .status(403)
+        .json({ message: "Not authorized to confirm this delivery" });
+    }
 
     // Only allow if it was previously shipped
     if (order.status !== "shipped") {
@@ -311,14 +340,22 @@ export const completeOrderManually = async (req, res) => {
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: "Order not found" });
 
-    // Admin can force complete a shipped or delivered order
-    if (order.status !== "delivered" && order.status !== "shipped") {
+    // Admin can force complete a shipped, delivery-claimed, or delivered order
+    const completableStatuses = ["shipped", "delivery-claimed", "delivered"];
+    if (!completableStatuses.includes(order.status)) {
       return res
         .status(400)
-        .json({ message: "Can only complete shipped or delivered orders" });
+        .json({
+          message:
+            "Can only complete shipped, delivery-claimed, or delivered orders",
+        });
     }
 
     order.status = "completed";
+    order.statusHistory.push({
+      status: "completed",
+      note: "Order manually finalized by Admin",
+    });
     await order.save();
 
     res.json({
