@@ -10,6 +10,7 @@ import {
   updateProductForUser,
   deleteProductForUser,
   getOrdersByUser,
+  getSellerSalesByUser,
 } from "../controllers/adminController.js";
 import { protect, adminOnly } from "../middlewares/authMiddleware.js";
 
@@ -39,7 +40,10 @@ router.delete(
   deleteProductForUser,
 );
 
-// user orders
+// user orders (orders placed BY this user)
 router.get("/users/:id/orders", protect, adminOnly, getOrdersByUser);
+
+// seller sales (orders containing this seller's products)
+router.get("/users/:id/seller-sales", protect, adminOnly, getSellerSalesByUser);
 
 export default router;

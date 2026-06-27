@@ -178,10 +178,41 @@ export const deleteProductForUser = async (req, res) => {
 
 export const getOrdersByUser = async (req, res) => {
   try {
-    const orders = await Order.find({ user: req.params.id }).populate(
-      "orderItems.product",
-    );
-    res.json(orders);
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(50, parseInt(req.query.limit) || 10);
+    const skip = (page - 1) * limit;
+
+    const [orders, total] = await Promise.all([
+      Order.find({ user: req.params.id })
+        .sort("-createdAt")
+        .skip(skip)
+        .limit(limit),
+      Order.countDocuments({ user: req.params.id }),
+    ]);
+
+    res.json({ orders, total, page, totalPages: Math.ceil(total / limit) });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// Orders where the user is a seller (orders containing their products)
+export const getSellerSalesByUser = async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(50, parseInt(req.query.limit) || 10);
+    const skip = (page - 1) * limit;
+
+    const [orders, total] = await Promise.all([
+      Order.find({ "orderItems.seller": req.params.id })
+        .populate("user", "name email")
+        .sort("-createdAt")
+        .skip(skip)
+        .limit(limit),
+      Order.countDocuments({ "orderItems.seller": req.params.id }),
+    ]);
+
+    res.json({ orders, total, page, totalPages: Math.ceil(total / limit) });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
