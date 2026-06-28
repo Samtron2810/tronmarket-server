@@ -10,20 +10,38 @@ import {
   updateProductForUser,
   deleteProductForUser,
   getOrdersByUser,
+  getSellerSalesByUser,
 } from "../controllers/adminController.js";
 import { protect, adminOnly } from "../middlewares/authMiddleware.js";
+import { validate } from "../middlewares/validate.js";
+import {
+  updateRoleSchema,
+  updateUserSchema,
+} from "../validations/adminSchemas.js"; // FIX #4
 
 const router = express.Router();
 
 router.get("/users", protect, adminOnly, getUsers);
-router.put("/users/:id/role", protect, adminOnly, updateUserRole);
+
+// FIX #4: Zod validation on role and user update routes
+router.put(
+  "/users/:id/role",
+  protect,
+  adminOnly,
+  validate(updateRoleSchema),
+  updateUserRole,
+);
 router.delete("/users/:id", protect, adminOnly, deleteUser);
 
-// user management
 router.get("/users/:id", protect, adminOnly, getUser);
-router.put("/users/:id", protect, adminOnly, updateUser);
+router.put(
+  "/users/:id",
+  protect,
+  adminOnly,
+  validate(updateUserSchema),
+  updateUser,
+);
 
-// manage a user's products (admin on behalf of seller)
 router.get("/users/:id/products", protect, adminOnly, getProductsByUser);
 router.post("/users/:id/products", protect, adminOnly, createProductForUser);
 router.put(
@@ -39,7 +57,7 @@ router.delete(
   deleteProductForUser,
 );
 
-// user orders
 router.get("/users/:id/orders", protect, adminOnly, getOrdersByUser);
+router.get("/users/:id/seller-sales", protect, adminOnly, getSellerSalesByUser);
 
 export default router;

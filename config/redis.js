@@ -2,6 +2,11 @@ import { createClient } from "redis";
 
 let client = null;
 
+// ── FIX #3: Track whether Redis has ever successfully connected ─────────────
+// If it was up and then goes down, we fail CLOSED (reject token checks)
+// rather than fail open (silently allow all blacklisted tokens through).
+let redisEverConnected = false;
+
 export async function connectRedis() {
   if (client) return client;
 
@@ -9,7 +14,6 @@ export async function connectRedis() {
     url: process.env.REDIS_URL || "redis://localhost:6379",
   });
 
-  // Log whether REDIS_URL is set for easier debugging
   console.log("REDIS_URL exists:", !!process.env.REDIS_URL);
 
   client.on("error", (err) => {
@@ -17,11 +21,13 @@ export async function connectRedis() {
   });
 
   client.on("connect", () => {
+    redisEverConnected = true;
     console.log("Redis connected");
   });
 
   try {
     await client.connect();
+    redisEverConnected = true;
   } catch (err) {
     console.warn("Redis unavailable — running without cache");
     client = null;
@@ -78,7 +84,6 @@ export async function cacheDel(...keys) {
 export async function invalidateProductCache() {
   if (!client) return;
   try {
-    // Scan and delete all keys matching product:* pattern
     let cursor = 0;
     do {
       const result = await client.scan(cursor, {
@@ -125,13 +130,31 @@ export async function blacklistToken(token, ttlSeconds) {
 
 /**
  * Check if a token has been blacklisted.
+ *
+ * FIX #3: Fails CLOSED when Redis was previously connected but is now down.
+ * This prevents a Redis outage from silently un-blacklisting logged-out tokens.
+ * Throws an error so the auth middleware can return 503 instead of 200.
  */
 export async function isTokenBlacklisted(token) {
-  if (!client) return false;
+  if (!client) {
+    if (redisEverConnected) {
+      // Redis was up before — fail closed to protect blacklisted tokens
+      throw new Error(
+        "Auth service temporarily unavailable. Please try again.",
+      );
+    }
+    // Redis was never configured (dev without Redis) — allow through
+    return false;
+  }
   try {
     const result = await client.get(`bl:${token}`);
     return result === "1";
   } catch {
+    if (redisEverConnected) {
+      throw new Error(
+        "Auth service temporarily unavailable. Please try again.",
+      );
+    }
     return false;
   }
 }

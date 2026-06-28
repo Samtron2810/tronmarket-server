@@ -44,7 +44,6 @@ export const createOrder = async (req, res) => {
       statusHistory: [{ status: "pending", note: "Order placed" }],
     });
 
-    // Decrement stock for each ordered product
     await Promise.all(
       orderItems.map((item) =>
         Product.findByIdAndUpdate(item.product, {
@@ -58,16 +57,29 @@ export const createOrder = async (req, res) => {
 
     res.status(201).json(order);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("createOrder:", error);
+    res.status(500).json({ message: "Failed to create order." });
   }
 };
 
 export const getMyOrders = async (req, res) => {
   try {
-    const orders = await Order.find({ user: req.user._id }).sort("-createdAt");
-    res.json(orders);
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(50, parseInt(req.query.limit) || 20);
+    const skip = (page - 1) * limit;
+
+    const [orders, total] = await Promise.all([
+      Order.find({ user: req.user._id })
+        .sort("-createdAt")
+        .skip(skip)
+        .limit(limit),
+      Order.countDocuments({ user: req.user._id }),
+    ]);
+
+    res.json({ orders, page, totalPages: Math.ceil(total / limit), total });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("getMyOrders:", error);
+    res.status(500).json({ message: "Failed to fetch orders." });
   }
 };
 
@@ -95,7 +107,8 @@ export const getOrderById = async (req, res) => {
 
     res.json(order);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("getOrderById:", error);
+    res.status(500).json({ message: "Failed to fetch order." });
   }
 };
 
@@ -120,7 +133,6 @@ export const updateOrderStatus = async (req, res) => {
 
     const { status, note } = req.body;
 
-    // Enforce valid forward-only status transitions
     const validTransitions = {
       pending: ["processing", "cancelled"],
       paid: ["processing", "shipped", "cancelled"],
@@ -148,7 +160,8 @@ export const updateOrderStatus = async (req, res) => {
 
     res.json(order);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("updateOrderStatus:", error);
+    res.status(500).json({ message: "Failed to update order status." });
   }
 };
 
@@ -160,7 +173,8 @@ export const getSellerOrders = async (req, res) => {
 
     res.json(orders);
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("getSellerOrders:", error);
+    res.status(500).json({ message: "Failed to fetch seller orders." });
   }
 };
 
@@ -179,14 +193,10 @@ export const getOrders = async (req, res) => {
       Order.countDocuments({}),
     ]);
 
-    res.json({
-      orders,
-      page,
-      totalPages: Math.ceil(total / limit),
-      total,
-    });
+    res.json({ orders, page, totalPages: Math.ceil(total / limit), total });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("getOrders:", error);
+    res.status(500).json({ message: "Failed to fetch orders." });
   }
 };
 
@@ -204,7 +214,13 @@ export const cancelOrder = async (req, res) => {
         .json({ message: "Not authorized to cancel this order" });
     }
 
-    const nonCancellableStates = ["shipped", "delivered", "cancelled"];
+    const nonCancellableStates = [
+      "shipped",
+      "delivery-claimed",
+      "delivered",
+      "completed",
+      "cancelled",
+    ];
     if (nonCancellableStates.includes(order.status)) {
       return res.status(400).json({
         message: `Cannot cancel an order that is already ${order.status}`,
@@ -234,20 +250,23 @@ export const cancelOrder = async (req, res) => {
       order,
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("cancelOrder:", error);
+    res.status(500).json({ message: "Failed to cancel order." });
   }
 };
 
-// @desc    Confirm delivery by customer
-// @route   PUT /api/orders/:id/deliver
-// @access  Private (Customer Only)
 export const confirmDelivery = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id);
 
     if (!order) return res.status(404).json({ message: "Order not found" });
 
-    // Only allow if it was previously shipped
+    if (order.user.toString() !== req.user._id.toString()) {
+      return res
+        .status(403)
+        .json({ message: "Not authorized to confirm this delivery" });
+    }
+
     if (order.status !== "shipped") {
       return res
         .status(400)
@@ -264,13 +283,11 @@ export const confirmDelivery = async (req, res) => {
 
     res.json({ success: true, message: "Order marked as delivered", order });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("confirmDelivery:", error);
+    res.status(500).json({ message: "Failed to confirm delivery." });
   }
 };
 
-// @desc    Seller claims delivery when buyer refuses to click confirm
-// @route   PUT /api/orders/:id/seller-delivery-claim
-// @access  Private (Seller/Admin)
 export const sellerDeliveryClaim = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id);
@@ -282,7 +299,6 @@ export const sellerDeliveryClaim = async (req, res) => {
         .json({ message: "You can only claim delivery on shipped orders" });
     }
 
-    // Update status to indicate a claim has been filed — Admin must finalize
     order.status = "delivery-claimed";
 
     if (order.statusHistory) {
@@ -299,26 +315,29 @@ export const sellerDeliveryClaim = async (req, res) => {
       order,
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("sellerDeliveryClaim:", error);
+    res.status(500).json({ message: "Failed to file delivery claim." });
   }
 };
 
-// @desc    Admin manually closes the order after verifying proof or waiting out disputes
-// @route   PUT /api/orders/:id/complete
-// @access  Private (Admin Only)
 export const completeOrderManually = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: "Order not found" });
 
-    // Admin can force complete a shipped or delivered order
-    if (order.status !== "delivered" && order.status !== "shipped") {
-      return res
-        .status(400)
-        .json({ message: "Can only complete shipped or delivered orders" });
+    const completableStatuses = ["shipped", "delivery-claimed", "delivered"];
+    if (!completableStatuses.includes(order.status)) {
+      return res.status(400).json({
+        message:
+          "Can only complete shipped, delivery-claimed, or delivered orders",
+      });
     }
 
     order.status = "completed";
+    order.statusHistory.push({
+      status: "completed",
+      note: "Order manually finalized by Admin",
+    });
     await order.save();
 
     res.json({
@@ -327,6 +346,7 @@ export const completeOrderManually = async (req, res) => {
       order,
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("completeOrderManually:", error);
+    res.status(500).json({ message: "Failed to complete order." });
   }
 };

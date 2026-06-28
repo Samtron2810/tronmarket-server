@@ -1,9 +1,19 @@
 import dotenv from "dotenv";
 dotenv.config();
 
+// ── FIX #9: Validate required env vars at startup ──────────────────────────
+const REQUIRED_ENV = ["MONGO_URI", "JWT_SECRET", "PAYSTACK_SECRET_KEY"];
+for (const key of REQUIRED_ENV) {
+  if (!process.env[key]) {
+    console.error(`FATAL: Missing required environment variable: ${key}`);
+    process.exit(1);
+  }
+}
+
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
+import helmet from "helmet"; // FIX #8: HTTP security headers
 
 import connectDB from "./config/db.js";
 import { connectRedis } from "./config/redis.js";
@@ -27,6 +37,9 @@ connectRedis().catch(() => {});
 
 const app = express();
 
+// ── FIX #8: Helmet sets secure HTTP headers (XSS, clickjacking, MIME, HSTS…)
+app.use(helmet());
+
 // middleware
 app.use(
   cors({
@@ -35,9 +48,6 @@ app.use(
   }),
 );
 
-// increase body size limits to allow large uploads (base64 fallback) and form data
-
-// Modify your existing express.json middleware configuration to capture raw body
 app.use(
   express.json({
     limit: "50mb",

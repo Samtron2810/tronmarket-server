@@ -14,13 +14,18 @@ export const protect = async (req, res, next) => {
     }
 
     if (!token) {
-      return res.status(401).json({
-        message: "Not authorized",
-      });
+      return res.status(401).json({ message: "Not authorized" });
     }
 
-    // Check if token has been blacklisted (logged out)
-    const blacklisted = await isTokenBlacklisted(token);
+    // FIX #3: isTokenBlacklisted now throws if Redis goes down after being up.
+    // We surface that as a 503 rather than silently allowing the request through.
+    let blacklisted;
+    try {
+      blacklisted = await isTokenBlacklisted(token);
+    } catch (redisErr) {
+      return res.status(503).json({ message: redisErr.message });
+    }
+
     if (blacklisted) {
       return res.status(401).json({
         message: "Token expired. Please log in again.",
@@ -31,11 +36,13 @@ export const protect = async (req, res, next) => {
 
     req.user = await User.findById(decoded.id).select("-password");
 
+    if (!req.user) {
+      return res.status(401).json({ message: "User no longer exists" });
+    }
+
     next();
   } catch (error) {
-    return res.status(401).json({
-      message: "Invalid token",
-    });
+    return res.status(401).json({ message: "Invalid token" });
   }
 };
 
@@ -43,9 +50,7 @@ export const adminOnly = (req, res, next) => {
   if (req.user && req.user.role === "admin") {
     next();
   } else {
-    res.status(403).json({
-      message: "Admin access only",
-    });
+    res.status(403).json({ message: "Admin access only" });
   }
 };
 
@@ -53,9 +58,7 @@ export const sellerOnly = (req, res, next) => {
   if (req.user && (req.user.role === "seller" || req.user.role === "admin")) {
     next();
   } else {
-    res.status(403).json({
-      message: "Seller access only",
-    });
+    res.status(403).json({ message: "Seller access only" });
   }
 };
 
