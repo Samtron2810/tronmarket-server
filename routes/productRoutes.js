@@ -6,6 +6,7 @@ import {
   updateProduct,
   deleteProduct,
   getMyProducts,
+  stockCheck,
 } from "../controllers/productController.js";
 import { protect, sellerOnly } from "../middlewares/authMiddleware.js";
 import { validate } from "../middlewares/validate.js";
@@ -22,6 +23,12 @@ router.get("/", getProducts);
 // GET /api/products/seller/my-products — Seller only, cached per seller
 // MUST be defined before /:id to avoid Express matching "seller" as an :id param
 router.get("/seller/my-products", protect, sellerOnly, getMyProducts);
+
+// POST /api/products/stock-check — Public
+// MUST be defined before /:id to avoid Express matching "stock-check" as an :id param
+// Returns live stock levels for a given list of product IDs.
+// Not cached — always hits DB so the Cart page shows real-time stock.
+router.post("/stock-check", stockCheck);
 
 // GET /api/products/:id — Public, cached via Redis
 router.get("/:id", getProduct);

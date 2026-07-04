@@ -65,6 +65,7 @@ app.use(generalLimiter);
 // health check
 app.get("/api/health", (req, res) => {
   res.json({ status: "OK", message: "TronMarket API running" });
+  res.send("API Running...");
 });
 
 // routes

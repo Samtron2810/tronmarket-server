@@ -1,5 +1,3 @@
-import escapeStringRegexp from "escape-string-regexp"; // FIX #1: ReDoS prevention
-import sanitize from "mongo-sanitize"; // FIX #2: operator injection
 import Product from "../models/Product.js";
 import {
   cacheGet,
@@ -9,36 +7,14 @@ import {
   productCacheKey,
 } from "../config/redis.js";
 
-// Allowed fields for create/update — prevents prototype pollution & field injection
-// FIX #2: explicit whitelist instead of spreading raw req.body
-const ALLOWED_PRODUCT_FIELDS = [
-  "name",
-  "description",
-  "price",
-  "category",
-  "brand",
-  "stock",
-  "image",
-  "images",
-];
-
-function pickProductFields(body) {
-  const picked = {};
-  for (const field of ALLOWED_PRODUCT_FIELDS) {
-    if (body[field] !== undefined) {
-      picked[field] = body[field];
-    }
-  }
-  return sanitize(picked);
-}
-
 export const createProduct = async (req, res) => {
   try {
     const payload = {
-      ...pickProductFields(req.body), // FIX #2: whitelist + sanitize
+      ...req.body,
       seller: req.user._id,
     };
 
+    // if images array provided in body set images and primary image
     if (payload.images && payload.images.length > 0) {
       payload.image = payload.images[0];
     } else if (payload.image) {
@@ -47,13 +23,14 @@ export const createProduct = async (req, res) => {
 
     const product = await Product.create(payload);
 
+    // Invalidate product cache so new product appears in listings
     await invalidateProductCache();
 
     res.status(201).json(product);
   } catch (error) {
-    // FIX #7: log real error, return safe message
-    console.error("createProduct:", error);
-    res.status(500).json({ message: "Failed to create product." });
+    res.status(500).json({
+      message: error.message,
+    });
   }
 };
 
@@ -61,36 +38,40 @@ export const getProducts = async (req, res) => {
   try {
     const { search, category, min, max, page = 1, limit = 6 } = req.query;
 
+    // Try to get from cache first
     const cacheKey = productCacheKey(req.query);
     const cached = await cacheGet(cacheKey);
+
     if (cached) {
       return res.json(cached);
     }
 
     let filter = {};
 
-    // FIX #1: Escape search string to prevent ReDoS and regex injection.
-    // Also enforce a max length so the regex engine can't be fed huge input.
-    if (search && typeof search === "string") {
-      const safe = escapeStringRegexp(search.slice(0, 100));
-      filter.name = { $regex: safe, $options: "i" };
+    // SEARCH (name)
+    if (search) {
+      filter.name = { $regex: search, $options: "i" };
     }
 
-    if (category && typeof category === "string") {
-      filter.category = sanitize(category); // FIX #2
+    // CATEGORY
+    if (category) {
+      filter.category = category;
     }
 
+    // PRICE RANGE
     if (min || max) {
       filter.price = {};
       if (min) filter.price.$gte = Number(min);
       if (max) filter.price.$lte = Number(max);
     }
 
+    // PAGINATION
     const pageNum = Math.max(Number(page) || 1, 1);
     const perPage = Math.max(Number(limit) || 6, 1);
     const skip = (pageNum - 1) * perPage;
 
     const total = await Product.countDocuments(filter);
+
     const products = await Product.find(filter).skip(skip).limit(perPage);
 
     const result = {
@@ -100,12 +81,12 @@ export const getProducts = async (req, res) => {
       pages: Math.ceil(total / perPage),
     };
 
+    // Cache for 5 minutes (300 seconds)
     await cacheSet(cacheKey, result, 300);
 
     res.json(result);
   } catch (error) {
-    console.error("getProducts:", error);
-    res.status(500).json({ message: "Failed to fetch products." });
+    res.status(500).json({ message: error.message });
   }
 };
 
@@ -113,6 +94,7 @@ export const getProduct = async (req, res) => {
   try {
     const { id } = req.params;
 
+    // Try single-product cache
     const cacheKey = `product:single:${id}`;
     const cached = await cacheGet(cacheKey);
     if (cached) {
@@ -122,15 +104,19 @@ export const getProduct = async (req, res) => {
     const product = await Product.findById(id);
 
     if (!product) {
-      return res.status(404).json({ message: "Product not found" });
+      return res.status(404).json({
+        message: "Product not found",
+      });
     }
 
+    // Cache single product for 10 minutes
     await cacheSet(cacheKey, product, 600);
 
     res.json(product);
   } catch (error) {
-    console.error("getProduct:", error);
-    res.status(500).json({ message: "Failed to fetch product." });
+    res.status(500).json({
+      message: error.message,
+    });
   }
 };
 
@@ -139,19 +125,21 @@ export const updateProduct = async (req, res) => {
     const product = await Product.findById(req.params.id);
 
     if (!product) {
-      return res.status(404).json({ message: "Product not found" });
+      return res.status(404).json({
+        message: "Product not found",
+      });
     }
 
     if (
       product.seller.toString() !== req.user._id.toString() &&
       req.user.role !== "admin"
     ) {
-      return res.status(403).json({ message: "Unauthorized" });
+      return res.status(403).json({
+        message: "Unauthorized",
+      });
     }
 
-    // FIX #2: whitelist + sanitize — no raw body spreading into Mongoose
-    const updatePayload = pickProductFields(req.body);
-
+    const updatePayload = { ...req.body };
     if (updatePayload.images && updatePayload.images.length > 0) {
       updatePayload.image = updatePayload.images[0];
     } else if (updatePayload.image) {
@@ -161,17 +149,21 @@ export const updateProduct = async (req, res) => {
     const updated = await Product.findByIdAndUpdate(
       req.params.id,
       updatePayload,
-      { new: true },
+      {
+        new: true,
+      },
     );
 
+    // Invalidate both list cache and single-product cache
     await invalidateProductCache();
     await cacheDel(`product:single:${req.params.id}`);
     await cacheDel(`product:seller:${req.user._id}`);
 
     res.json(updated);
   } catch (error) {
-    console.error("updateProduct:", error);
-    res.status(500).json({ message: "Failed to update product." });
+    res.status(500).json({
+      message: error.message,
+    });
   }
 };
 
@@ -180,31 +172,38 @@ export const deleteProduct = async (req, res) => {
     const product = await Product.findById(req.params.id);
 
     if (!product) {
-      return res.status(404).json({ message: "Product not found" });
+      return res.status(404).json({
+        message: "Product not found",
+      });
     }
 
     if (
       product.seller.toString() !== req.user._id.toString() &&
       req.user.role !== "admin"
     ) {
-      return res.status(403).json({ message: "Unauthorized" });
+      return res.status(403).json({
+        message: "Unauthorized",
+      });
     }
 
     await Product.findByIdAndDelete(req.params.id);
 
+    // Invalidate cache
     await invalidateProductCache();
     await cacheDel(`product:single:${req.params.id}`);
     await cacheDel(`product:seller:${req.user._id}`);
 
     res.json({ message: "Product deleted" });
   } catch (error) {
-    console.error("deleteProduct:", error);
-    res.status(500).json({ message: "Failed to delete product." });
+    res.status(500).json({
+      message: error.message,
+    });
   }
 };
 
 export const getMyProducts = async (req, res) => {
   try {
+    // Seller's own products — cache per seller
     const cacheKey = `product:seller:${req.user._id}`;
     const cached = await cacheGet(cacheKey);
     if (cached) {
@@ -213,11 +212,46 @@ export const getMyProducts = async (req, res) => {
 
     const products = await Product.find({ seller: req.user._id });
 
+    // Cache for 5 minutes
     await cacheSet(cacheKey, products, 300);
 
     res.json(products);
   } catch (error) {
-    console.error("getMyProducts:", error);
-    res.status(500).json({ message: "Failed to fetch your products." });
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc  Get current stock levels for a list of product IDs
+// @route POST /api/products/stock-check
+// @access Public
+// Called by the frontend Cart page on mount to show live stock warnings
+// before the user even attempts checkout.
+// Body: { productIds: string[] }
+// Returns: { stocks: { [productId]: number } }
+export const stockCheck = async (req, res) => {
+  try {
+    const { productIds } = req.body;
+
+    if (!Array.isArray(productIds) || productIds.length === 0) {
+      return res
+        .status(400)
+        .json({ message: "productIds must be a non-empty array" });
+    }
+
+    // Fetch only _id and stock — no need for full product documents
+    // Goes directly to DB (no cache) so we always get the freshest stock value
+    const products = await Product.find(
+      { _id: { $in: productIds } },
+      { _id: 1, stock: 1 },
+    ).lean();
+
+    const stocks = {};
+    products.forEach((p) => {
+      stocks[p._id.toString()] = p.stock ?? 0;
+    });
+
+    res.json({ stocks });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 };

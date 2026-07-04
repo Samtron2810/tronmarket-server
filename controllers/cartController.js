@@ -11,6 +11,7 @@ export const addToCart = async (req, res) => {
       return res.status(404).json({ message: "Product not found" });
     }
 
+    // check stock
     if (!product.stock || product.stock <= 0) {
       return res.status(400).json({ message: "Product is out of stock" });
     }
@@ -48,8 +49,7 @@ export const addToCart = async (req, res) => {
 
     res.status(200).json(cart);
   } catch (error) {
-    console.error("addToCart:", error);
-    res.status(500).json({ message: "Failed to add item to cart." });
+    res.status(500).json({ message: error.message });
   }
 };
 
@@ -65,35 +65,13 @@ export const getCart = async (req, res) => {
 
     res.json(cart);
   } catch (error) {
-    console.error("getCart:", error);
-    res.status(500).json({ message: "Failed to fetch cart." });
+    res.status(500).json({ message: error.message });
   }
 };
 
 export const updateCartItem = async (req, res) => {
   try {
     const { quantity } = req.body;
-
-    // FIX #5: Validate quantity — must be a positive integer
-    const qty = Number(quantity);
-    if (!Number.isInteger(qty) || qty < 1) {
-      return res
-        .status(400)
-        .json({ message: "Quantity must be a positive whole number." });
-    }
-
-    // FIX #5: Check quantity against current stock
-    const product = await Product.findById(req.params.productId).select(
-      "stock",
-    );
-    if (!product) {
-      return res.status(404).json({ message: "Product not found" });
-    }
-    if (qty > product.stock) {
-      return res.status(400).json({
-        message: `Only ${product.stock} left in stock`,
-      });
-    }
 
     const cart = await Cart.findOne({ user: req.user._id });
 
@@ -106,17 +84,16 @@ export const updateCartItem = async (req, res) => {
     );
 
     if (!item) {
-      return res.status(404).json({ message: "Item not found in cart" });
+      return res.status(404).json({ message: "Item not found" });
     }
 
-    item.quantity = qty;
+    item.quantity = quantity;
 
     await cart.save();
 
     res.json(cart);
   } catch (error) {
-    console.error("updateCartItem:", error);
-    res.status(500).json({ message: "Failed to update cart item." });
+    res.status(500).json({ message: error.message });
   }
 };
 
@@ -136,8 +113,7 @@ export const removeCartItem = async (req, res) => {
 
     res.json(cart);
   } catch (error) {
-    console.error("removeCartItem:", error);
-    res.status(500).json({ message: "Failed to remove cart item." });
+    res.status(500).json({ message: error.message });
   }
 };
 
@@ -155,7 +131,67 @@ export const clearCart = async (req, res) => {
 
     res.json({ message: "Cart cleared" });
   } catch (error) {
-    console.error("clearCart:", error);
-    res.status(500).json({ message: "Failed to clear cart." });
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc  Validate all cart items against current stock levels
+// @route POST /api/cart/validate
+// @access Private
+// Called by the frontend before placing an order to catch cases where
+// another user bought the last item after this user added it to their cart.
+// Returns { valid: boolean, errors: [{ productId, name, reason, availableStock, cartQuantity }] }
+export const validateCart = async (req, res) => {
+  try {
+    const cart = await Cart.findOne({ user: req.user._id }).populate(
+      "items.product",
+    );
+
+    if (!cart || cart.items.length === 0) {
+      return res.json({ valid: true, errors: [] });
+    }
+
+    const errors = [];
+
+    for (const item of cart.items) {
+      const product = item.product;
+
+      // Product was deleted
+      if (!product) {
+        errors.push({
+          productId: item.product,
+          name: "Unknown product",
+          reason: "out_of_stock",
+          availableStock: 0,
+          cartQuantity: item.quantity,
+        });
+        continue;
+      }
+
+      const available = product.stock ?? 0;
+      const inCart = item.quantity;
+
+      if (available === 0) {
+        errors.push({
+          productId: product._id,
+          name: product.name,
+          reason: "out_of_stock",
+          availableStock: 0,
+          cartQuantity: inCart,
+        });
+      } else if (available < inCart) {
+        errors.push({
+          productId: product._id,
+          name: product.name,
+          reason: "insufficient",
+          availableStock: available,
+          cartQuantity: inCart,
+        });
+      }
+    }
+
+    res.json({ valid: errors.length === 0, errors });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 };
