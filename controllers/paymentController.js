@@ -3,9 +3,6 @@ import paystackApi from "../config/paystack.js";
 import Order from "../models/Order.js";
 import Payment from "../models/Payment.js";
 
-// @desc    Verify a Paystack transaction (popup flow) and update order/payment
-// @route   POST /api/payments/verify
-// @access  Private
 export const verifyPayment = async (req, res) => {
   try {
     const { reference, orderId } = req.body;
@@ -27,11 +24,7 @@ export const verifyPayment = async (req, res) => {
     }
 
     if (order.isPaid) {
-      return res.json({
-        success: true,
-        message: "Order already paid",
-        order,
-      });
+      return res.json({ success: true, message: "Order already paid", order });
     }
 
     const paystackRes = await paystackApi.get(
@@ -40,7 +33,6 @@ export const verifyPayment = async (req, res) => {
 
     const data = paystackRes.data.data;
 
-    // record / update the payment attempt regardless of outcome
     let payment = await Payment.findOne({ reference });
 
     if (!payment) {
@@ -91,14 +83,11 @@ export const verifyPayment = async (req, res) => {
       });
     }
 
-    console.error("Paystack verify error:", error.message);
-    res.status(500).json({ message: "Failed to verify payment" });
+    console.error("verifyPayment:", error);
+    res.status(500).json({ message: "Failed to verify payment." });
   }
 };
 
-// @desc    Paystack webhook listener (backup confirmation channel)
-// @route   POST /api/payments/webhook
-// @access  Public (verified via signature)
 export const paystackWebhook = async (req, res) => {
   try {
     const secret = process.env.PAYSTACK_SECRET_KEY;
@@ -155,7 +144,7 @@ export const paystackWebhook = async (req, res) => {
 
     res.sendStatus(200);
   } catch (error) {
-    console.error("Paystack webhook error:", error.message);
+    console.error("paystackWebhook:", error);
     res.sendStatus(500);
   }
 };

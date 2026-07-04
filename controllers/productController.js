@@ -220,3 +220,38 @@ export const getMyProducts = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+// @desc  Get current stock levels for a list of product IDs
+// @route POST /api/products/stock-check
+// @access Public
+// Called by the frontend Cart page on mount to show live stock warnings
+// before the user even attempts checkout.
+// Body: { productIds: string[] }
+// Returns: { stocks: { [productId]: number } }
+export const stockCheck = async (req, res) => {
+  try {
+    const { productIds } = req.body;
+
+    if (!Array.isArray(productIds) || productIds.length === 0) {
+      return res
+        .status(400)
+        .json({ message: "productIds must be a non-empty array" });
+    }
+
+    // Fetch only _id and stock — no need for full product documents
+    // Goes directly to DB (no cache) so we always get the freshest stock value
+    const products = await Product.find(
+      { _id: { $in: productIds } },
+      { _id: 1, stock: 1 },
+    ).lean();
+
+    const stocks = {};
+    products.forEach((p) => {
+      stocks[p._id.toString()] = p.stock ?? 0;
+    });
+
+    res.json({ stocks });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};

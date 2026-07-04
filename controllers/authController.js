@@ -17,7 +17,9 @@ export const registerUser = async (req, res) => {
 
     res.status(201).json({ _id: user._id, name: user.name, email: user.email });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    // FIX #7: log internally, return safe message
+    console.error("registerUser:", error);
+    res.status(500).json({ message: "Registration failed. Please try again." });
   }
 };
 
@@ -32,15 +34,9 @@ export const loginUser = async (req, res) => {
     if (!isMatch)
       return res.status(400).json({ message: "Invalid credentials" });
 
-    const token = jwt.sign(
-      {
-        id: user._id,
-      },
-      process.env.JWT_SECRET,
-      {
-        expiresIn: "7d",
-      },
-    );
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
+      expiresIn: "7d",
+    });
 
     res.json({
       _id: user._id,
@@ -50,13 +46,13 @@ export const loginUser = async (req, res) => {
       token,
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("loginUser:", error);
+    res.status(500).json({ message: "Login failed. Please try again." });
   }
 };
 
 export const logoutUser = async (req, res) => {
   try {
-    // Blacklist the current token in Redis so it can't be reused
     const authHeader = req.headers.authorization;
     if (authHeader && authHeader.startsWith("Bearer ")) {
       const token = authHeader.split(" ")[1];
@@ -66,6 +62,7 @@ export const logoutUser = async (req, res) => {
 
     res.json({ message: "Logged out successfully" });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    console.error("logoutUser:", error);
+    res.status(500).json({ message: "Logout failed. Please try again." });
   }
 };

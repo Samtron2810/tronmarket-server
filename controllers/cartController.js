@@ -134,3 +134,64 @@ export const clearCart = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+// @desc  Validate all cart items against current stock levels
+// @route POST /api/cart/validate
+// @access Private
+// Called by the frontend before placing an order to catch cases where
+// another user bought the last item after this user added it to their cart.
+// Returns { valid: boolean, errors: [{ productId, name, reason, availableStock, cartQuantity }] }
+export const validateCart = async (req, res) => {
+  try {
+    const cart = await Cart.findOne({ user: req.user._id }).populate(
+      "items.product",
+    );
+
+    if (!cart || cart.items.length === 0) {
+      return res.json({ valid: true, errors: [] });
+    }
+
+    const errors = [];
+
+    for (const item of cart.items) {
+      const product = item.product;
+
+      // Product was deleted
+      if (!product) {
+        errors.push({
+          productId: item.product,
+          name: "Unknown product",
+          reason: "out_of_stock",
+          availableStock: 0,
+          cartQuantity: item.quantity,
+        });
+        continue;
+      }
+
+      const available = product.stock ?? 0;
+      const inCart = item.quantity;
+
+      if (available === 0) {
+        errors.push({
+          productId: product._id,
+          name: product.name,
+          reason: "out_of_stock",
+          availableStock: 0,
+          cartQuantity: inCart,
+        });
+      } else if (available < inCart) {
+        errors.push({
+          productId: product._id,
+          name: product.name,
+          reason: "insufficient",
+          availableStock: available,
+          cartQuantity: inCart,
+        });
+      }
+    }
+
+    res.json({ valid: errors.length === 0, errors });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};

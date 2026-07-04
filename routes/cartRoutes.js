@@ -5,6 +5,7 @@ import {
   updateCartItem,
   removeCartItem,
   clearCart,
+  validateCart,
 } from "../controllers/cartController.js";
 import { protect } from "../middlewares/authMiddleware.js";
 
@@ -15,6 +16,10 @@ router.use(protect);
 router.get("/", getCart);
 
 router.post("/", addToCart);
+
+// POST /api/cart/validate — must be defined BEFORE /:productId
+// so Express does not match "validate" as a productId param
+router.post("/validate", validateCart);
 
 router.put("/:productId", updateCartItem);
 
