@@ -7,6 +7,12 @@ import {
   productCacheKey,
 } from "../config/redis.js";
 
+// ── CACHE TTL SETTINGS ──
+// Reduce from 5 minutes to 1.5 minutes (90 seconds) so stock changes
+// appear on the homepage quickly after orders complete.
+const PRODUCT_LIST_CACHE_TTL = 90; // seconds
+const SINGLE_PRODUCT_CACHE_TTL = 300; // 5 minutes (less critical)
+
 export const createProduct = async (req, res) => {
   try {
     const payload = {
@@ -39,6 +45,8 @@ export const getProducts = async (req, res) => {
     const { search, category, min, max, page = 1, limit = 6 } = req.query;
 
     // Try to get from cache first
+    // Cache key is based on all filter parameters so different searches
+    // have separate cache entries
     const cacheKey = productCacheKey(req.query);
     const cached = await cacheGet(cacheKey);
 
@@ -81,8 +89,8 @@ export const getProducts = async (req, res) => {
       pages: Math.ceil(total / perPage),
     };
 
-    // Cache for 5 minutes (300 seconds)
-    await cacheSet(cacheKey, result, 300);
+    // Cache for 1.5 minutes so stock changes appear quickly after orders
+    await cacheSet(cacheKey, result, PRODUCT_LIST_CACHE_TTL);
 
     res.json(result);
   } catch (error) {
@@ -109,8 +117,8 @@ export const getProduct = async (req, res) => {
       });
     }
 
-    // Cache single product for 10 minutes
-    await cacheSet(cacheKey, product, 600);
+    // Cache single product for 5 minutes
+    await cacheSet(cacheKey, product, SINGLE_PRODUCT_CACHE_TTL);
 
     res.json(product);
   } catch (error) {
@@ -212,8 +220,8 @@ export const getMyProducts = async (req, res) => {
 
     const products = await Product.find({ seller: req.user._id });
 
-    // Cache for 5 minutes
-    await cacheSet(cacheKey, products, 300);
+    // Cache for 2 minutes (seller dashboard needs fresh stock updates)
+    await cacheSet(cacheKey, products, 120);
 
     res.json(products);
   } catch (error) {
@@ -224,8 +232,9 @@ export const getMyProducts = async (req, res) => {
 // @desc  Get current stock levels for a list of product IDs
 // @route POST /api/products/stock-check
 // @access Public
-// Called by the frontend Cart page on mount to show live stock warnings
-// before the user even attempts checkout.
+// Called by the frontend (Cart page AND Homepage product cards) to show
+// live stock warnings / availability before the user attempts to add to cart
+// or checkout. This endpoint is NOT cached — always hits the DB for real-time data.
 // Body: { productIds: string[] }
 // Returns: { stocks: { [productId]: number } }
 export const stockCheck = async (req, res) => {
