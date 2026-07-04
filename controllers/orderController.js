@@ -1,6 +1,7 @@
 import Cart from "../models/Cart.js";
 import Order from "../models/Order.js";
 import Product from "../models/Product.js";
+import { invalidateProductCache, cacheDel } from "../config/redis.js";
 
 export const createOrder = async (req, res) => {
   try {
@@ -44,21 +45,44 @@ export const createOrder = async (req, res) => {
       statusHistory: [{ status: "pending", note: "Order placed" }],
     });
 
-    await Promise.all(
-      orderItems.map((item) =>
-        Product.findByIdAndUpdate(item.product, {
-          $inc: { stock: -item.quantity },
-        }),
-      ),
+    // Decrement stock for each ordered product
+    const decrementPromises = orderItems.map((item) =>
+      Product.findByIdAndUpdate(item.product, {
+        $inc: { stock: -item.quantity },
+      }),
     );
+
+    await Promise.all(decrementPromises);
+
+    // ── FIX: Invalidate product caches so seller dashboard shows fresh stock ──
+    // The getMyProducts endpoint caches per seller, and getProducts caches
+    // for product listings. After decreasing stock, these caches are stale.
+    // Invalidate them all so the seller sees updated stock on their dashboard.
+    const sellerIds = [
+      ...new Set(orderItems.map((item) => item.seller?.toString())),
+    ];
+
+    // Invalidate global product cache (for product listings)
+    await invalidateProductCache();
+
+    // Invalidate per-seller product cache (for seller dashboard)
+    for (const sellerId of sellerIds) {
+      if (sellerId) {
+        await cacheDel(`product:seller:${sellerId}`);
+      }
+    }
+
+    // Invalidate single-product caches
+    for (const item of orderItems) {
+      await cacheDel(`product:single:${item.product}`);
+    }
 
     cart.items = [];
     await cart.save();
 
     res.status(201).json(order);
   } catch (error) {
-    console.error("createOrder:", error);
-    res.status(500).json({ message: "Failed to create order." });
+    res.status(500).json({ message: error.message });
   }
 };
 
@@ -76,10 +100,14 @@ export const getMyOrders = async (req, res) => {
       Order.countDocuments({ user: req.user._id }),
     ]);
 
-    res.json({ orders, page, totalPages: Math.ceil(total / limit), total });
+    res.json({
+      orders,
+      page,
+      totalPages: Math.ceil(total / limit),
+      total,
+    });
   } catch (error) {
-    console.error("getMyOrders:", error);
-    res.status(500).json({ message: "Failed to fetch orders." });
+    res.status(500).json({ message: error.message });
   }
 };
 
@@ -107,8 +135,7 @@ export const getOrderById = async (req, res) => {
 
     res.json(order);
   } catch (error) {
-    console.error("getOrderById:", error);
-    res.status(500).json({ message: "Failed to fetch order." });
+    res.status(500).json({ message: error.message });
   }
 };
 
@@ -133,6 +160,7 @@ export const updateOrderStatus = async (req, res) => {
 
     const { status, note } = req.body;
 
+    // Enforce valid forward-only status transitions
     const validTransitions = {
       pending: ["processing", "cancelled"],
       paid: ["processing", "shipped", "cancelled"],
@@ -160,8 +188,7 @@ export const updateOrderStatus = async (req, res) => {
 
     res.json(order);
   } catch (error) {
-    console.error("updateOrderStatus:", error);
-    res.status(500).json({ message: "Failed to update order status." });
+    res.status(500).json({ message: error.message });
   }
 };
 
@@ -173,8 +200,7 @@ export const getSellerOrders = async (req, res) => {
 
     res.json(orders);
   } catch (error) {
-    console.error("getSellerOrders:", error);
-    res.status(500).json({ message: "Failed to fetch seller orders." });
+    res.status(500).json({ message: error.message });
   }
 };
 
@@ -193,10 +219,14 @@ export const getOrders = async (req, res) => {
       Order.countDocuments({}),
     ]);
 
-    res.json({ orders, page, totalPages: Math.ceil(total / limit), total });
+    res.json({
+      orders,
+      page,
+      totalPages: Math.ceil(total / limit),
+      total,
+    });
   } catch (error) {
-    console.error("getOrders:", error);
-    res.status(500).json({ message: "Failed to fetch orders." });
+    res.status(500).json({ message: error.message });
   }
 };
 
@@ -235,6 +265,21 @@ export const cancelOrder = async (req, res) => {
           }),
         ),
       );
+
+      // ── FIX: Invalidate caches after restoring stock ──
+      const sellerIds = [
+        ...new Set(order.orderItems.map((item) => item.seller?.toString())),
+      ];
+
+      await invalidateProductCache();
+      for (const sellerId of sellerIds) {
+        if (sellerId) {
+          await cacheDel(`product:seller:${sellerId}`);
+        }
+      }
+      for (const item of order.orderItems) {
+        await cacheDel(`product:single:${item.product}`);
+      }
     }
 
     order.status = "cancelled";
@@ -250,23 +295,27 @@ export const cancelOrder = async (req, res) => {
       order,
     });
   } catch (error) {
-    console.error("cancelOrder:", error);
-    res.status(500).json({ message: "Failed to cancel order." });
+    res.status(500).json({ message: error.message });
   }
 };
 
+// @desc    Confirm delivery by customer
+// @route   PUT /api/orders/:id/deliver
+// @access  Private (Customer Only)
 export const confirmDelivery = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id);
 
     if (!order) return res.status(404).json({ message: "Order not found" });
 
+    // Only the customer who placed the order can confirm delivery
     if (order.user.toString() !== req.user._id.toString()) {
       return res
         .status(403)
         .json({ message: "Not authorized to confirm this delivery" });
     }
 
+    // Only allow if it was previously shipped
     if (order.status !== "shipped") {
       return res
         .status(400)
@@ -283,11 +332,13 @@ export const confirmDelivery = async (req, res) => {
 
     res.json({ success: true, message: "Order marked as delivered", order });
   } catch (error) {
-    console.error("confirmDelivery:", error);
-    res.status(500).json({ message: "Failed to confirm delivery." });
+    res.status(500).json({ message: error.message });
   }
 };
 
+// @desc    Seller claims delivery when buyer refuses to click confirm
+// @route   PUT /api/orders/:id/seller-delivery-claim
+// @access  Private (Seller/Admin)
 export const sellerDeliveryClaim = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id);
@@ -299,6 +350,7 @@ export const sellerDeliveryClaim = async (req, res) => {
         .json({ message: "You can only claim delivery on shipped orders" });
     }
 
+    // Update status to indicate a claim has been filed — Admin must finalize
     order.status = "delivery-claimed";
 
     if (order.statusHistory) {
@@ -315,16 +367,19 @@ export const sellerDeliveryClaim = async (req, res) => {
       order,
     });
   } catch (error) {
-    console.error("sellerDeliveryClaim:", error);
-    res.status(500).json({ message: "Failed to file delivery claim." });
+    res.status(500).json({ message: error.message });
   }
 };
 
+// @desc    Admin manually closes the order after verifying proof or waiting out disputes
+// @route   PUT /api/orders/:id/complete
+// @access  Private (Admin Only)
 export const completeOrderManually = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: "Order not found" });
 
+    // Admin can force complete a shipped, delivery-claimed, or delivered order
     const completableStatuses = ["shipped", "delivery-claimed", "delivered"];
     if (!completableStatuses.includes(order.status)) {
       return res.status(400).json({
@@ -346,7 +401,6 @@ export const completeOrderManually = async (req, res) => {
       order,
     });
   } catch (error) {
-    console.error("completeOrderManually:", error);
-    res.status(500).json({ message: "Failed to complete order." });
+    res.status(500).json({ message: error.message });
   }
 };
