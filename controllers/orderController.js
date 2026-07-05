@@ -1,7 +1,9 @@
 import Cart from "../models/Cart.js";
 import Order from "../models/Order.js";
 import Product from "../models/Product.js";
+import User from "../models/User.js";
 import { invalidateProductCache, cacheDel } from "../config/redis.js";
+import { sendOrderReceiptEmail } from "../emails/emailService.js";
 
 export const createOrder = async (req, res) => {
   try {
@@ -45,7 +47,6 @@ export const createOrder = async (req, res) => {
       statusHistory: [{ status: "pending", note: "Order placed" }],
     });
 
-    // Decrement stock for each ordered product
     const decrementPromises = orderItems.map((item) =>
       Product.findByIdAndUpdate(item.product, {
         $inc: { stock: -item.quantity },
@@ -54,31 +55,30 @@ export const createOrder = async (req, res) => {
 
     await Promise.all(decrementPromises);
 
-    // ── FIX: Invalidate product caches so seller dashboard shows fresh stock ──
-    // The getMyProducts endpoint caches per seller, and getProducts caches
-    // for product listings. After decreasing stock, these caches are stale.
-    // Invalidate them all so the seller sees updated stock on their dashboard.
     const sellerIds = [
       ...new Set(orderItems.map((item) => item.seller?.toString())),
     ];
 
-    // Invalidate global product cache (for product listings)
     await invalidateProductCache();
 
-    // Invalidate per-seller product cache (for seller dashboard)
     for (const sellerId of sellerIds) {
       if (sellerId) {
         await cacheDel(`product:seller:${sellerId}`);
       }
     }
 
-    // Invalidate single-product caches
     for (const item of orderItems) {
       await cacheDel(`product:single:${item.product}`);
     }
 
     cart.items = [];
     await cart.save();
+
+    // Fire-and-forget receipt email — non-fatal
+    const buyer = await User.findById(req.user._id).select("name email").lean();
+    if (buyer?.email) {
+      sendOrderReceiptEmail(buyer.email, buyer.name, order.toObject());
+    }
 
     res.status(201).json(order);
   } catch (error) {
@@ -160,7 +160,6 @@ export const updateOrderStatus = async (req, res) => {
 
     const { status, note } = req.body;
 
-    // Enforce valid forward-only status transitions
     const validTransitions = {
       pending: ["processing", "cancelled"],
       paid: ["processing", "shipped", "cancelled"],
@@ -266,7 +265,6 @@ export const cancelOrder = async (req, res) => {
         ),
       );
 
-      // ── FIX: Invalidate caches after restoring stock ──
       const sellerIds = [
         ...new Set(order.orderItems.map((item) => item.seller?.toString())),
       ];
@@ -299,23 +297,18 @@ export const cancelOrder = async (req, res) => {
   }
 };
 
-// @desc    Confirm delivery by customer
-// @route   PUT /api/orders/:id/deliver
-// @access  Private (Customer Only)
 export const confirmDelivery = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id);
 
     if (!order) return res.status(404).json({ message: "Order not found" });
 
-    // Only the customer who placed the order can confirm delivery
     if (order.user.toString() !== req.user._id.toString()) {
       return res
         .status(403)
         .json({ message: "Not authorized to confirm this delivery" });
     }
 
-    // Only allow if it was previously shipped
     if (order.status !== "shipped") {
       return res
         .status(400)
@@ -336,9 +329,6 @@ export const confirmDelivery = async (req, res) => {
   }
 };
 
-// @desc    Seller claims delivery when buyer refuses to click confirm
-// @route   PUT /api/orders/:id/seller-delivery-claim
-// @access  Private (Seller/Admin)
 export const sellerDeliveryClaim = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id);
@@ -350,7 +340,6 @@ export const sellerDeliveryClaim = async (req, res) => {
         .json({ message: "You can only claim delivery on shipped orders" });
     }
 
-    // Update status to indicate a claim has been filed — Admin must finalize
     order.status = "delivery-claimed";
 
     if (order.statusHistory) {
@@ -371,15 +360,11 @@ export const sellerDeliveryClaim = async (req, res) => {
   }
 };
 
-// @desc    Admin manually closes the order after verifying proof or waiting out disputes
-// @route   PUT /api/orders/:id/complete
-// @access  Private (Admin Only)
 export const completeOrderManually = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: "Order not found" });
 
-    // Admin can force complete a shipped, delivery-claimed, or delivered order
     const completableStatuses = ["shipped", "delivery-claimed", "delivered"];
     if (!completableStatuses.includes(order.status)) {
       return res.status(400).json({

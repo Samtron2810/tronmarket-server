@@ -10,6 +10,11 @@ const userSchema = new mongoose.Schema(
       enum: ["customer", "seller", "admin"],
       default: "customer",
     },
+
+    // ── Email verification ───────────────────────────────────────────────────
+    isVerified: { type: Boolean, default: false },
+    otp: { type: String, default: null }, // hashed 6-digit code
+    otpExpiresAt: { type: Date, default: null },
   },
   { timestamps: true },
 );

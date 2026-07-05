@@ -27,3 +27,23 @@ export const loginSchema = z.object({
     .string({ error: "Password is required" })
     .min(1, { error: "Password is required" }),
 });
+
+export const verifyOtpSchema = z.object({
+  email: z
+    .string({ error: "Email is required" })
+    .trim()
+    .email({ error: "Invalid email address" })
+    .toLowerCase(),
+  otp: z
+    .string({ error: "OTP is required" })
+    .length(6, { error: "OTP must be exactly 6 digits" })
+    .regex(/^\d{6}$/, { error: "OTP must contain only digits" }),
+});
+
+export const resendOtpSchema = z.object({
+  email: z
+    .string({ error: "Email is required" })
+    .trim()
+    .email({ error: "Invalid email address" })
+    .toLowerCase(),
+});
