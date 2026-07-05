@@ -1,8 +1,7 @@
 import rateLimit from "express-rate-limit";
 
-// Strict limiter for login attempts to prevent brute force
 export const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
+  windowMs: 15 * 60 * 1000,
   max: 10,
   message: {
     message: "Too many login attempts. Please try again after 15 minutes.",
@@ -11,9 +10,8 @@ export const loginLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-// Stricter limiter for register to prevent spam
 export const registerLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
+  windowMs: 60 * 60 * 1000,
   max: 5,
   message: {
     message: "Too many registration attempts. Please try again later.",
@@ -22,35 +20,36 @@ export const registerLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-// Checkout limiter — prevents rapid order creation
 export const checkoutLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
-  message: {
-    message: "Too many checkout attempts. Please slow down.",
-  },
+  message: { message: "Too many checkout attempts. Please slow down." },
   standardHeaders: true,
   legacyHeaders: false,
 });
 
-// General API limiter — baseline DoS protection for all routes
 export const generalLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
   max: 100,
-  message: {
-    message: "Too many requests. Please try again later.",
-  },
+  message: { message: "Too many requests. Please try again later." },
   standardHeaders: true,
   legacyHeaders: false,
 });
 
-// FIX #6: Dedicated upload limiter — prevents Cloudinary credit exhaustion
-// 20 upload requests per 15 minutes per IP
 export const uploadLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
+  message: { message: "Too many upload requests. Please try again later." },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// OTP limiter — prevents brute-force and resend spam
+export const otpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 6,
   message: {
-    message: "Too many upload requests. Please try again later.",
+    message: "Too many OTP attempts. Please try again after 15 minutes.",
   },
   standardHeaders: true,
   legacyHeaders: false,
