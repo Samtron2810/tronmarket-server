@@ -2,6 +2,7 @@ const DEFAULT_ORIGINS = [
   "http://localhost:5173",
   "https://tronmarket.vercel.app",
   "https://tronmarket-staging.vercel.app",
+  "https://tronmarket.netlify.app",
 ];
 
 const getAllowedOrigins = () => {
