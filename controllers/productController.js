@@ -128,26 +128,37 @@ export const getProduct = async (req, res) => {
   }
 };
 
+//allow only certain fields to be updated
+const ALLOWED_FIELDS = [
+  "name",
+  "description",
+  "price",
+  "category",
+  "brand",
+  "stock",
+  "image",
+  "images",
+];
+
 export const updateProduct = async (req, res) => {
   try {
     const product = await Product.findById(req.params.id);
-
     if (!product) {
-      return res.status(404).json({
-        message: "Product not found",
-      });
+      return res.status(404).json({ message: "Product not found" });
     }
-
     if (
       product.seller.toString() !== req.user._id.toString() &&
       req.user.role !== "admin"
     ) {
-      return res.status(403).json({
-        message: "Unauthorized",
-      });
+      return res.status(403).json({ message: "Unauthorized" });
     }
 
-    const updatePayload = { ...req.body };
+    // Whitelist fields — don't spread raw req.body
+    const updatePayload = {};
+    for (const field of ALLOWED_FIELDS) {
+      if (req.body[field] !== undefined) updatePayload[field] = req.body[field];
+    }
+
     if (updatePayload.images && updatePayload.images.length > 0) {
       updatePayload.image = updatePayload.images[0];
     } else if (updatePayload.image) {
@@ -157,21 +168,16 @@ export const updateProduct = async (req, res) => {
     const updated = await Product.findByIdAndUpdate(
       req.params.id,
       updatePayload,
-      {
-        new: true,
-      },
+      { new: true },
     );
 
-    // Invalidate both list cache and single-product cache
     await invalidateProductCache();
     await cacheDel(`product:single:${req.params.id}`);
     await cacheDel(`product:seller:${req.user._id}`);
 
     res.json(updated);
   } catch (error) {
-    res.status(500).json({
-      message: error.message,
-    });
+    res.status(500).json({ message: error.message });
   }
 };
 
