@@ -3,6 +3,7 @@ import sanitize from "mongo-sanitize"; // FIX #2
 import User from "../models/User.js";
 import Product from "../models/Product.js";
 import Order from "../models/Order.js";
+import { invalidateProductCache, cacheDel } from "../config/redis.js";
 
 // FIX #2: Explicit whitelist of product fields an admin may set
 const ALLOWED_PRODUCT_FIELDS = [
@@ -193,17 +194,18 @@ export const getProductsByUser = async (req, res) => {
 
 export const createProductForUser = async (req, res) => {
   try {
-    // FIX #2: whitelist + sanitize
     const payload = {
       ...pickProductFields(req.body),
       seller: req.params.id,
     };
-
     if (payload.images && payload.images.length > 0) {
       payload.image = payload.images[0];
     }
-
     const product = await Product.create(payload);
+
+    // Invalidate cache so new product appears immediately
+    await invalidateProductCache();
+
     res.status(201).json(product);
   } catch (error) {
     console.error("createProductForUser:", error);
@@ -216,9 +218,7 @@ export const updateProductForUser = async (req, res) => {
     const product = await Product.findById(req.params.productId);
     if (!product) return res.status(404).json({ message: "Product not found" });
 
-    // FIX #2: whitelist + sanitize — no raw body spreading into findByIdAndUpdate
     const updatePayload = pickProductFields(req.body);
-
     if (updatePayload.images && updatePayload.images.length > 0) {
       updatePayload.image = updatePayload.images[0];
     } else if (updatePayload.image) {
@@ -230,6 +230,14 @@ export const updateProductForUser = async (req, res) => {
       updatePayload,
       { new: true },
     );
+
+    // Invalidate list cache, single-product cache, and seller cache
+    await invalidateProductCache();
+    await cacheDel(
+      `product:single:${req.params.productId}`,
+      `product:seller:${product.seller}`,
+    );
+
     res.json(updated);
   } catch (error) {
     console.error("updateProductForUser:", error);
@@ -241,7 +249,16 @@ export const deleteProductForUser = async (req, res) => {
   try {
     const product = await Product.findById(req.params.productId);
     if (!product) return res.status(404).json({ message: "Product not found" });
+
     await Product.findByIdAndDelete(req.params.productId);
+
+    // Invalidate list cache, single-product cache, and seller cache
+    await invalidateProductCache();
+    await cacheDel(
+      `product:single:${req.params.productId}`,
+      `product:seller:${product.seller}`,
+    );
+
     res.json({ message: "Product deleted" });
   } catch (error) {
     console.error("deleteProductForUser:", error);
