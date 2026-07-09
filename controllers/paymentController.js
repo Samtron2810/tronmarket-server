@@ -2,6 +2,8 @@ import crypto from "crypto";
 import paystackApi from "../config/paystack.js";
 import Order from "../models/Order.js";
 import Payment from "../models/Payment.js";
+import User from "../models/User.js";
+import { sendOrderReceiptEmail } from "../emails/emailService.js";
 
 export const verifyPayment = async (req, res) => {
   try {
@@ -58,6 +60,15 @@ export const verifyPayment = async (req, res) => {
         note: "Payment confirmed via Paystack",
       });
       await order.save();
+
+      // Fire-and-forget receipt email — non-fatal
+      // Send receipt email only after payment is actually confirmed
+      const buyer = await User.findById(req.user._id)
+        .select("name email")
+        .lean();
+      if (buyer?.email) {
+        sendOrderReceiptEmail(buyer.email, buyer.name, order.toObject());
+      }
 
       return res.status(200).json({
         success: true,

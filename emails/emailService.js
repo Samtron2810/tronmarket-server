@@ -3,7 +3,7 @@ import { otpEmailHtml } from "./templates/otpEmail.js";
 import { orderReceiptHtml } from "./templates/orderReceiptEmail.js";
 
 const FROM_ADDRESS =
-  process.env.EMAIL_FROM || "TronMarket <onboarding@tronmarket.com>";
+  process.env.EMAIL_FROM || "TronMarket <onboarding@resend.dev>";
 
 export async function sendOtpEmail(toEmail, name, otp) {
   const resend = getResend();
