@@ -1,9 +1,7 @@
 import Cart from "../models/Cart.js";
 import Order from "../models/Order.js";
 import Product from "../models/Product.js";
-import User from "../models/User.js";
 import { invalidateProductCache, cacheDel } from "../config/redis.js";
-import { sendOrderReceiptEmail } from "../emails/emailService.js";
 
 export const createOrder = async (req, res) => {
   try {
@@ -73,12 +71,6 @@ export const createOrder = async (req, res) => {
 
     cart.items = [];
     await cart.save();
-
-    // Fire-and-forget receipt email — non-fatal
-    const buyer = await User.findById(req.user._id).select("name email").lean();
-    if (buyer?.email) {
-      sendOrderReceiptEmail(buyer.email, buyer.name, order.toObject());
-    }
 
     res.status(201).json(order);
   } catch (error) {
