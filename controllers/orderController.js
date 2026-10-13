@@ -7,6 +7,7 @@ import {
   syncProductSummary,
 } from "../services/variantService.js";
 import { invalidateProductCache, cacheDel } from "../config/redis.js";
+import { cancelOrderWithRefund } from "../services/orderCancellationService.js";
 
 export const createOrder = async (req, res) => {
   try {
@@ -18,6 +19,18 @@ export const createOrder = async (req, res) => {
 
     if (!cart || cart.items.length === 0) {
       return res.status(400).json({ message: "Cart is empty" });
+    }
+
+    // Defence in depth: never let a corrupted cart line (negative or
+    // fractional quantity, however it got there) become an order line —
+    // it would corrupt the total and the stock decrement.
+    for (const item of cart.items) {
+      if (!Number.isInteger(item.quantity) || item.quantity < 1) {
+        return res.status(400).json({
+          message:
+            "Your cart contains an invalid quantity. Please review your cart and try again.",
+        });
+      }
     }
 
     // Plan order lines from server-side truth (variant price/stock when a
@@ -235,6 +248,33 @@ export const updateOrderStatus = async (req, res) => {
       });
     }
 
+    // A refund is in flight for this order — the only safe next step is
+    // finishing the cancellation, not shipping or processing it.
+    if (order.refundStatus === "pending" && status !== "cancelled") {
+      return res.status(409).json({
+        message:
+          "A refund is being processed for this order; it can only be cancelled",
+      });
+    }
+
+    // Cancellation always goes through the shared refund + restock path,
+    // including for paid orders — never a bare status flip that keeps the
+    // customer's money and strands the reserved stock.
+    if (status === "cancelled") {
+      try {
+        const { order: cancelledOrder } = await cancelOrderWithRefund(order, {
+          allowedStatuses: [order.status],
+          note: note || `Cancelled by ${req.user.role}`,
+          refundReason: `Order cancelled by ${req.user.role}`,
+        });
+        return res.json(cancelledOrder);
+      } catch (error) {
+        return res
+          .status(error.statusCode || 500)
+          .json({ message: error.message });
+      }
+    }
+
     order.status = status;
     order.statusHistory.push({ status, note });
 
@@ -302,69 +342,38 @@ export const cancelOrder = async (req, res) => {
         .json({ message: "Not authorized to cancel this order" });
     }
 
-    const nonCancellableStates = [
-      "shipped",
-      "delivery-claimed",
-      "delivered",
-      "completed",
-      "cancelled",
-    ];
-    if (nonCancellableStates.includes(order.status)) {
-      return res.status(400).json({
-        message: `Cannot cancel an order that is already ${order.status}`,
-      });
+    if (order.status === "cancelled") {
+      return res
+        .status(400)
+        .json({ message: "Order has already been cancelled" });
     }
 
-    if (order.orderItems?.length > 0) {
-      await Promise.all(
-        order.orderItems.map((item) =>
-          item.variant
-            ? ProductVariant.findByIdAndUpdate(item.variant, {
-                $inc: { stock: item.quantity },
-              })
-            : Product.findByIdAndUpdate(item.product, {
-                $inc: { stock: item.quantity },
-              }),
-        ),
-      );
-
-      // Variant restocks change derived product totals.
-      for (const pid of [
-        ...new Set(order.orderItems.map((i) => i.product.toString())),
-      ]) {
-        const prod = await Product.findById(pid).select("hasVariants");
-        if (prod?.hasVariants) await syncProductSummary(pid);
-      }
-
-      const sellerIds = [
-        ...new Set(order.orderItems.map((item) => item.seller?.toString())),
-      ];
-
-      await invalidateProductCache();
-      for (const sellerId of sellerIds) {
-        if (sellerId) {
-          await cacheDel(`product:seller:${sellerId}`);
-        }
-      }
-      for (const item of order.orderItems) {
-        await cacheDel(`product:single:${item.product}`);
-      }
-    }
-
-    order.status = "cancelled";
-    order.statusHistory.push({
-      status: "cancelled",
+    // Paid orders are only cancelled once a Paystack refund has been
+    // requested (handled inside cancelOrderWithRefund); if the refund
+    // cannot be requested the cancellation aborts with an error and the
+    // order keeps its status and reserved stock.
+    const { order: cancelledOrder } = await cancelOrderWithRefund(order, {
+      allowedStatuses: ["pending", "paid", "processing"],
       note: "Cancelled by customer",
+      refundReason: "Order cancelled by customer",
     });
-    await order.save();
+
+    const refundMessage =
+      cancelledOrder.refundStatus === "processed"
+        ? " Your payment has been refunded."
+        : cancelledOrder.refundStatus === "pending"
+          ? " Your refund has been requested from Paystack."
+          : "";
 
     res.json({
       success: true,
-      message: "Order cancelled successfully and inventory restored",
-      order,
+      message: `Order cancelled successfully and inventory restored.${refundMessage}`,
+      order: cancelledOrder,
     });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+    res
+      .status(error.statusCode || 500)
+      .json({ message: error.message || "Failed to cancel order." });
   }
 };
 
@@ -404,6 +413,20 @@ export const sellerDeliveryClaim = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id);
     if (!order) return res.status(404).json({ message: "Order not found" });
+
+    // A seller may only claim delivery on an order that actually contains
+    // their items (same ownership rule as updateOrderStatus). Admins may
+    // claim on any order.
+    if (req.user.role === "seller") {
+      const isSellerInOrder = order.orderItems.some(
+        (item) =>
+          item.seller && item.seller.toString() === req.user._id.toString(),
+      );
+
+      if (!isSellerInOrder) {
+        return res.status(403).json({ message: "Unauthorized" });
+      }
+    }
 
     if (order.status !== "shipped") {
       return res

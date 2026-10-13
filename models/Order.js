@@ -68,6 +68,28 @@ const orderSchema = new mongoose.Schema(
 
     paidAt: Date,
 
+    // Refund lifecycle for a paid order (e.g. customer cancels after
+    // paying). "none" until a refund is requested; a paid order must not
+    // be treated as fully cancelled until this leaves "pending".
+    refundStatus: {
+      type: String,
+      enum: ["none", "pending", "processed", "failed"],
+      default: "none",
+    },
+
+    refundReference: {
+      type: String,
+      default: "",
+    },
+
+    // Amount refunded (or requested) back to the customer, in Naira.
+    refundAmount: {
+      type: Number,
+      default: 0,
+    },
+
+    refundedAt: Date,
+
     status: {
       type: String,
       enum: [

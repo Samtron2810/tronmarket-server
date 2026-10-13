@@ -42,7 +42,15 @@ export const addToCart = async (req, res) => {
       return res.status(400).json({ message: "Product is out of stock" });
     }
 
-    const qty = Number(quantity) || 1;
+    // Quantities are validated by Zod on the route, but never trust that
+    // alone: a negative or fractional quantity would corrupt order totals
+    // and inflate stock at checkout.
+    const qty = quantity === undefined ? 1 : Number(quantity);
+    if (!Number.isInteger(qty) || qty < 1) {
+      return res
+        .status(400)
+        .json({ message: "Quantity must be a whole number of at least 1" });
+    }
     if (qty > available) {
       return res
         .status(400)
@@ -106,8 +114,10 @@ export const updateCartItem = async (req, res) => {
     const { quantity } = req.body;
     const qty = Number(quantity);
 
-    if (!Number.isFinite(qty) || qty < 1) {
-      return res.status(400).json({ message: "Quantity must be at least 1" });
+    if (!Number.isInteger(qty) || qty < 1) {
+      return res
+        .status(400)
+        .json({ message: "Quantity must be a whole number of at least 1" });
     }
 
     const cart = await Cart.findOne({ user: req.user._id });
@@ -247,6 +257,21 @@ export const validateCart = async (req, res) => {
           name: product.name,
           reason: "unavailable",
           availableStock: 0,
+          cartQuantity: item.quantity,
+        });
+        continue;
+      }
+
+      if (!Number.isInteger(item.quantity) || item.quantity < 1) {
+        errors.push({
+          productId: product._id,
+          variantId: item.variant?._id ?? null,
+          variantLabel: item.variantLabel || "",
+          name: product.name,
+          reason: "invalid_quantity",
+          availableStock: item.variant
+            ? (item.variant.stock ?? 0)
+            : (product.stock ?? 0),
           cartQuantity: item.quantity,
         });
         continue;
