@@ -29,6 +29,16 @@ export const variantAttributeSchema = z.object({
   value: z.string().trim().min(1),
 });
 
+// Product imagery is a URL (uploaded to Cloudinary first) — never an
+// arbitrary string or an inline data blob, and never an unbounded list.
+export const imageUrlSchema = z
+  .string({ error: "Image must be a URL" })
+  .trim()
+  .max(2048, { error: "Image URL is too long" })
+  .refine((value) => value === "" || /^https?:\/\//i.test(value), {
+    error: "Image must be an http(s) URL",
+  });
+
 export const variantInputSchema = z.object({
   _id: z.string().trim().optional(),
   sku: z.string().trim().max(80).optional().default(""),
@@ -46,7 +56,7 @@ export const variantInputSchema = z.object({
     .int({ error: "Variant stock must be a whole number" })
     .nonnegative({ error: "Variant stock cannot be negative" })
     .default(0),
-  image: z.string().trim().optional().default(""),
+  image: imageUrlSchema.optional().default(""),
   isActive: z.boolean().optional().default(true),
 });
 
@@ -191,8 +201,12 @@ const productObject = z.object({
     .int({ error: "Stock must be a whole number" })
     .nonnegative({ error: "Stock cannot be negative" })
     .default(0),
-  image: z.string().trim().optional().default(""),
-  images: z.array(z.string()).optional().default([]),
+  image: imageUrlSchema.optional().default(""),
+  images: z
+    .array(imageUrlSchema)
+    .max(10, { error: "At most 10 images per product" })
+    .optional()
+    .default([]),
   isFeatured: z.boolean().optional(),
   hasVariants: z.boolean().optional().default(false),
   options: z.array(optionSchema).optional().default([]),

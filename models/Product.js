@@ -74,6 +74,14 @@ const productSchema = new mongoose.Schema(
       default: false,
     },
 
+    // Soft visibility switch. Products are deactivated (not deleted) when
+    // their seller's account is removed, so historical carts/orders keep
+    // working while the listing disappears from the storefront.
+    isActive: {
+      type: Boolean,
+      default: true,
+    },
+
     // ── Variants (see models/ProductVariant.js) ──────────────────────────
     // When hasVariants is true, `price`/`stock` above are DERIVED summaries
     // (min active-variant price / sum of active-variant stock) maintained by

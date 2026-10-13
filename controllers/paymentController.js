@@ -12,8 +12,13 @@ import {
   expectedAmountKobo,
   finalizeSuccessfulPayment,
   flagPaymentForRefund,
+  isPaymentAfterDeadline,
   validateSuccessfulTransaction,
 } from "../services/paymentService.js";
+import {
+  expireOrderIfDue,
+  isOrderExpired,
+} from "../services/orderExpiryService.js";
 
 function sendGatewayError(res, error, fallbackMessage) {
   if (error?.statusCode) {
@@ -91,6 +96,18 @@ export const initializePayment = async (req, res) => {
     if (order.status !== "pending") {
       return res.status(409).json({
         message: `Order is ${order.status} and can no longer accept payment`,
+      });
+    }
+
+    // Past the payment deadline the reserved stock goes back — expire the
+    // order on the spot instead of starting a charge that can't be used.
+    if (isOrderExpired(order)) {
+      const { order: expiredOrder } = await expireOrderIfDue(order);
+      return res.status(410).json({
+        success: false,
+        message:
+          "This order's payment window has expired. Please place a new order.",
+        order: expiredOrder,
       });
     }
 
@@ -291,6 +308,24 @@ export const verifyPayment = async (req, res) => {
       });
     }
 
+    if (!order.isPaid && isPaymentAfterDeadline(order, data)) {
+      const flagged = await flagPaymentForRefund({
+        order,
+        payment,
+        data,
+        reason: "Payment completed after the order payment deadline",
+      });
+      return res.status(409).json({
+        success: false,
+        message: `Payment was completed after this order's payment deadline.${
+          flagged.refundInitiated
+            ? " A refund has been requested."
+            : " Please contact support for a refund."
+        }`,
+        refundInitiated: flagged.refundInitiated,
+      });
+    }
+
     if (order.isPaid || order.status !== "pending") {
       const flagged = await flagPaymentForRefund({
         order,
@@ -417,6 +452,16 @@ export const paystackWebhook = async (req, res) => {
           payment,
           data,
           reason: validationError,
+        });
+        return res.sendStatus(200);
+      }
+
+      if (!order.isPaid && isPaymentAfterDeadline(order, data)) {
+        await flagPaymentForRefund({
+          order,
+          payment,
+          data,
+          reason: "Payment completed after the order payment deadline",
         });
         return res.sendStatus(200);
       }

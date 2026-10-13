@@ -28,6 +28,49 @@ const orderItemSchema = new mongoose.Schema(
   { _id: false },
 );
 
+// One fulfilment record per seller in the order. The buyer still places
+// (and pays for) a single order, but each seller only ever sees and acts on
+// their own items, subtotal and fulfilment status; the order-level status
+// is derived from these (see services/orderFulfillmentService.js).
+const sellerFulfillmentSchema = new mongoose.Schema(
+  {
+    seller: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+    status: {
+      type: String,
+      enum: [
+        "pending",
+        "paid",
+        "processing",
+        "shipped",
+        "delivery-claimed",
+        "delivered",
+        "completed",
+        "cancelled",
+      ],
+      default: "pending",
+    },
+    // This seller's share of totalPrice (their items only).
+    subtotal: {
+      type: Number,
+      default: 0,
+    },
+    statusHistory: {
+      type: [
+        {
+          status: { type: String },
+          note: { type: String },
+          changedAt: { type: Date, default: Date.now },
+        },
+      ],
+      default: [],
+    },
+  },
+  { _id: false },
+);
+
 const orderSchema = new mongoose.Schema(
   {
     user: {
@@ -37,6 +80,8 @@ const orderSchema = new mongoose.Schema(
     },
 
     orderItems: [orderItemSchema],
+
+    sellerFulfillments: [sellerFulfillmentSchema],
 
     totalPrice: {
       type: Number,
@@ -67,6 +112,15 @@ const orderSchema = new mongoose.Schema(
     },
 
     paidAt: Date,
+
+    // Unpaid orders only hold their reserved stock until this moment; the
+    // expiry sweeper (services/orderExpiryService.js) then cancels the
+    // order and returns the stock.
+    paymentExpiresAt: Date,
+
+    expiredAt: Date,
+
+    deliveredAt: Date,
 
     // Refund lifecycle for a paid order (e.g. customer cancels after
     // paying). "none" until a refund is requested; a paid order must not
@@ -120,5 +174,9 @@ const orderSchema = new mongoose.Schema(
     timestamps: true,
   },
 );
+
+orderSchema.index({ status: 1, paymentExpiresAt: 1 });
+orderSchema.index({ "sellerFulfillments.seller": 1, createdAt: -1 });
+orderSchema.index({ user: 1, createdAt: -1 });
 
 export default mongoose.model("Order", orderSchema);

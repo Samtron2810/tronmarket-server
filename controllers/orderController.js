@@ -8,6 +8,20 @@ import {
 } from "../services/variantService.js";
 import { invalidateProductCache, cacheDel } from "../config/redis.js";
 import { cancelOrderWithRefund } from "../services/orderCancellationService.js";
+import {
+  buildSellerFulfillments,
+  ensureSellerFulfillments,
+  getSellerFulfillment,
+  effectiveFulfillmentStatus,
+  setSellerFulfillmentStatus,
+  isMultiSellerOrder,
+  sellerOrderView,
+} from "../services/orderFulfillmentService.js";
+import {
+  newPaymentDeadline,
+  expireOrderIfDue,
+  sweepExpiredOrders,
+} from "../services/orderExpiryService.js";
 
 export const createOrder = async (req, res) => {
   try {
@@ -34,19 +48,81 @@ export const createOrder = async (req, res) => {
     }
 
     // Plan order lines from server-side truth (variant price/stock when a
-    // variant is chosen — never prices sent by the client).
+    // variant is chosen — never prices sent by the client). Every line must
+    // be fully available: orders are never silently clamped or partially
+    // fulfilled. Any problem rejects the whole checkout with a per-line
+    // explanation, before any stock moves and before the cart is touched.
     const planned = [];
+    const unavailable = [];
     for (const item of cart.items) {
       const product = item.product;
-      if (!product) continue;
-
+      const productId = item.product?._id ?? item.product;
       const variant = item.variant ?? null;
-      if (product.hasVariants && (!variant || !variant.isActive)) continue;
+      const variantId = variant?._id ?? variant ?? null;
+      const lineInfo = {
+        productId,
+        variantId,
+        variantLabel: item.variantLabel || "",
+        name: product?.name || "Unknown product",
+        cartQuantity: item.quantity,
+      };
+
+      if (!product || product.isActive === false) {
+        unavailable.push({
+          ...lineInfo,
+          reason: "unavailable",
+          availableStock: 0,
+        });
+        continue;
+      }
+
+      if (
+        variant &&
+        (!variant.product ||
+          variant.product.toString() !== product._id.toString() ||
+          !variant.isActive)
+      ) {
+        unavailable.push({
+          ...lineInfo,
+          variantLabel:
+            item.variantLabel ||
+            (variant.attributes
+              ? buildVariantLabel(variant.attributes)
+              : ""),
+          reason: "unavailable",
+          availableStock: 0,
+        });
+        continue;
+      }
+
+      if (product.hasVariants && !variant) {
+        unavailable.push({
+          ...lineInfo,
+          reason: "unavailable",
+          availableStock: 0,
+        });
+        continue;
+      }
 
       const available = variant ? (variant.stock ?? 0) : (product.stock ?? 0);
-      if (available <= 0) continue;
+      if (!Number.isFinite(available) || available <= 0) {
+        unavailable.push({
+          ...lineInfo,
+          reason: "out_of_stock",
+          availableStock: 0,
+        });
+        continue;
+      }
 
-      const quantity = Math.min(item.quantity, available);
+      if (item.quantity > available) {
+        unavailable.push({
+          ...lineInfo,
+          reason: "insufficient",
+          availableStock: available,
+        });
+        continue;
+      }
+
       planned.push({
         productDoc: product,
         variantDoc: variant,
@@ -60,13 +136,36 @@ export const createOrder = async (req, res) => {
         image: variant?.image || product.image,
         seller: product.seller,
         price: variant ? variant.price : product.price,
-        quantity,
+        quantity: item.quantity,
+      });
+    }
+
+    if (unavailable.length > 0) {
+      return res.status(409).json({
+        message:
+          "Some items in your cart are no longer available. Please review your cart and try again.",
+        errors: unavailable,
+        details: unavailable,
       });
     }
 
     if (planned.length === 0) {
       return res.status(400).json({ message: "No available items in cart" });
     }
+
+    const restoreLines = async (lines) => {
+      for (const line of lines) {
+        if (line.variantDoc) {
+          await ProductVariant.findByIdAndUpdate(line.variantDoc._id, {
+            $inc: { stock: line.quantity },
+          });
+        } else {
+          await Product.findByIdAndUpdate(line.productDoc._id, {
+            $inc: { stock: line.quantity },
+          });
+        }
+      }
+    };
 
     // Atomically decrement stock per line (variant document when present).
     // The stock >= qty filter makes overselling the last unit impossible;
@@ -90,19 +189,31 @@ export const createOrder = async (req, res) => {
           );
 
       if (!updated) {
-        for (const done of decremented) {
-          if (done.variantDoc) {
-            await ProductVariant.findByIdAndUpdate(done.variantDoc._id, {
-              $inc: { stock: done.quantity },
-            });
-          } else {
-            await Product.findByIdAndUpdate(done.productDoc._id, {
-              $inc: { stock: done.quantity },
-            });
-          }
-        }
-        return res.status(400).json({
+        await restoreLines(decremented);
+        return res.status(409).json({
           message: `Insufficient stock for ${line.name}${line.variantLabel ? ` (${line.variantLabel})` : ""}`,
+          errors: [
+            {
+              productId: line.product,
+              variantId: line.variant ?? null,
+              variantLabel: line.variantLabel || "",
+              name: line.name,
+              reason: "insufficient",
+              availableStock: 0,
+              cartQuantity: line.quantity,
+            },
+          ],
+          details: [
+            {
+              productId: line.product,
+              variantId: line.variant ?? null,
+              variantLabel: line.variantLabel || "",
+              name: line.name,
+              reason: "insufficient",
+              availableStock: 0,
+              cartQuantity: line.quantity,
+            },
+          ],
         });
       }
       decremented.push(line);
@@ -116,41 +227,66 @@ export const createOrder = async (req, res) => {
       0,
     );
 
-    const order = await Order.create({
-      user: req.user._id,
-      orderItems,
-      totalPrice,
-      shippingAddress,
-      statusHistory: [{ status: "pending", note: "Order placed" }],
-    });
-
-    // Keep derived product summaries in step with variant stock changes.
-    const affectedProductIds = [
-      ...new Set(planned.map((l) => l.product.toString())),
-    ];
-    for (const pid of affectedProductIds) {
-      const doc = planned.find((l) => l.product.toString() === pid).productDoc;
-      if (doc.hasVariants) await syncProductSummary(pid);
+    // If order creation itself fails, every decremented unit goes back —
+    // stock must never leak on a failed checkout.
+    let order;
+    try {
+      order = await Order.create({
+        user: req.user._id,
+        orderItems,
+        sellerFulfillments: buildSellerFulfillments(orderItems),
+        totalPrice,
+        shippingAddress,
+        paymentExpiresAt: newPaymentDeadline(),
+        statusHistory: [{ status: "pending", note: "Order placed" }],
+      });
+    } catch (createError) {
+      await restoreLines(decremented);
+      throw createError;
     }
 
-    const sellerIds = [
-      ...new Set(orderItems.map((item) => item.seller?.toString())),
-    ];
-
-    await invalidateProductCache();
-
-    for (const sellerId of sellerIds) {
-      if (sellerId) {
-        await cacheDel(`product:seller:${sellerId}`);
+    // Post-creation bookkeeping is best-effort: the order exists, so a
+    // cache/cart hiccup must not turn this response into a 500 (which
+    // would invite a duplicate order on retry).
+    try {
+      // Keep derived product summaries in step with variant stock changes.
+      const affectedProductIds = [
+        ...new Set(planned.map((l) => l.product.toString())),
+      ];
+      for (const pid of affectedProductIds) {
+        const doc = planned.find((l) => l.product.toString() === pid).productDoc;
+        if (doc.hasVariants) await syncProductSummary(pid);
       }
-    }
 
-    for (const item of orderItems) {
-      await cacheDel(`product:single:${item.product}`);
-    }
+      const sellerIds = [
+        ...new Set(orderItems.map((item) => item.seller?.toString())),
+      ];
 
-    cart.items = [];
-    await cart.save();
+      await invalidateProductCache();
+
+      for (const sellerId of sellerIds) {
+        if (sellerId) {
+          await cacheDel(`product:seller:${sellerId}`);
+        }
+      }
+
+      for (const item of orderItems) {
+        await cacheDel(`product:single:${item.product}`);
+      }
+
+      // Clear only the lines that were actually purchased.
+      const purchasedKeys = new Set(
+        planned.map((l) => `${l.product.toString()}:${l.variant ?? ""}`),
+      );
+      cart.items = cart.items.filter((item) => {
+        const pid = (item.product?._id ?? item.product)?.toString();
+        const vid = (item.variant?._id ?? item.variant ?? "")?.toString();
+        return !purchasedKeys.has(`${pid}:${vid}`);
+      });
+      await cart.save();
+    } catch (postError) {
+      console.error("createOrder post-processing failed:", postError);
+    }
 
     res.status(201).json(order);
   } catch (error) {
@@ -160,12 +296,19 @@ export const createOrder = async (req, res) => {
 
 export const getMyOrders = async (req, res) => {
   try {
+    // Expire this buyer's due unpaid orders first so the list never shows
+    // a payable order whose stock has already been released.
+    await sweepExpiredOrders({ userId: req.user._id, limit: 50 }).catch(
+      () => {},
+    );
+
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(50, parseInt(req.query.limit) || 20);
     const skip = (page - 1) * limit;
 
     const [orders, total] = await Promise.all([
       Order.find({ user: req.user._id })
+        .populate("sellerFulfillments.seller", "name")
         .sort("-createdAt")
         .skip(skip)
         .limit(limit),
@@ -185,10 +328,9 @@ export const getMyOrders = async (req, res) => {
 
 export const getOrderById = async (req, res) => {
   try {
-    const order = await Order.findById(req.params.id).populate(
-      "user",
-      "name email",
-    );
+    let order = await Order.findById(req.params.id)
+      .populate("user", "name email")
+      .populate("sellerFulfillments.seller", "name");
 
     if (!order) {
       return res.status(404).json({ message: "Order not found" });
@@ -203,6 +345,21 @@ export const getOrderById = async (req, res) => {
 
     if (!isOwner && !isAdmin && !isSellerInOrder) {
       return res.status(403).json({ message: "Unauthorized" });
+    }
+
+    // The buyer never sees a stale payable order past its deadline.
+    if (isOwner) {
+      const result = await expireOrderIfDue(order).catch(() => null);
+      if (result?.order) {
+        order = await Order.findById(req.params.id)
+          .populate("user", "name email")
+          .populate("sellerFulfillments.seller", "name");
+      }
+    }
+
+    // Sellers only ever receive their own slice of someone else's order.
+    if (!isOwner && !isAdmin && req.user.role === "seller") {
+      return res.json(sellerOrderView(order, req.user._id));
     }
 
     res.json(order);
@@ -231,6 +388,50 @@ export const updateOrderStatus = async (req, res) => {
     }
 
     const { status, note } = req.body;
+
+    ensureSellerFulfillments(order);
+
+    // Multi-seller orders: a seller advances ONLY their own fulfilment.
+    // They can ship/claim their items, but they can never ship, deliver or
+    // cancel another seller's share — whole-order cancellation stays with
+    // the buyer/admin so the single payment is refunded exactly once.
+    if (req.user.role === "seller" && isMultiSellerOrder(order)) {
+      if (order.refundStatus === "pending") {
+        return res.status(409).json({
+          message:
+            "A refund is being processed for this order; it can only be cancelled",
+        });
+      }
+      if (status === "cancelled") {
+        return res.status(403).json({
+          message:
+            "Sellers cannot cancel a multi-seller order. Ask the customer or an admin to cancel it so the payment is handled correctly.",
+        });
+      }
+
+      const fulfillment = getSellerFulfillment(order, req.user._id);
+      const current = effectiveFulfillmentStatus(order, fulfillment);
+      const allowedByFulfillment = {
+        paid: ["processing", "shipped"],
+        processing: ["shipped"],
+        shipped: ["delivery-claimed"],
+      };
+      const allowedForSeller = allowedByFulfillment[current] || [];
+      if (!allowedForSeller.includes(status)) {
+        return res.status(400).json({
+          message: `Your items cannot move from "${current}" to "${status}"`,
+        });
+      }
+
+      setSellerFulfillmentStatus(
+        order,
+        req.user._id,
+        status,
+        note || `Seller updated their items to ${status}`,
+      );
+      await order.save();
+      return res.json(sellerOrderView(order, req.user._id));
+    }
 
     const validTransitions = {
       pending: ["processing", "cancelled"],
@@ -275,6 +476,23 @@ export const updateOrderStatus = async (req, res) => {
       }
     }
 
+    // Keep fulfilment records in step with whole-order transitions
+    // (admin actions, and single-seller orders where seller == order).
+    for (const fulfillment of order.sellerFulfillments || []) {
+      if (fulfillment.status === "cancelled") continue;
+      if (
+        req.user.role === "admin" ||
+        fulfillment.seller?.toString() === req.user._id.toString()
+      ) {
+        fulfillment.status = status;
+        fulfillment.statusHistory = fulfillment.statusHistory || [];
+        fulfillment.statusHistory.push({
+          status,
+          note: note || `Order ${status}`,
+        });
+      }
+    }
+
     order.status = status;
     order.statusHistory.push({ status, note });
 
@@ -292,11 +510,27 @@ export const updateOrderStatus = async (req, res) => {
 
 export const getSellerOrders = async (req, res) => {
   try {
-    const orders = await Order.find({
-      "orderItems.seller": req.user._id,
-    }).populate("user", "name email");
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit) || 20));
+    const skip = (page - 1) * limit;
 
-    res.json(orders);
+    const filter = { "orderItems.seller": req.user._id };
+    const [orders, total] = await Promise.all([
+      Order.find(filter)
+        .populate("user", "name email")
+        .sort("-createdAt")
+        .skip(skip)
+        .limit(limit),
+      Order.countDocuments(filter),
+    ]);
+
+    // Each seller receives only their own items, subtotal and status.
+    res.json({
+      orders: orders.map((order) => sellerOrderView(order, req.user._id)),
+      page,
+      totalPages: Math.ceil(total / limit),
+      total,
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -305,7 +539,7 @@ export const getSellerOrders = async (req, res) => {
 export const getOrders = async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page) || 1);
-    const limit = Math.min(100, parseInt(req.query.limit) || 20);
+    const limit = Math.min(50, parseInt(req.query.limit) || 20);
     const skip = (page - 1) * limit;
 
     const [orders, total] = await Promise.all([
@@ -389,7 +623,72 @@ export const confirmDelivery = async (req, res) => {
         .json({ message: "Not authorized to confirm this delivery" });
     }
 
-    if (order.status !== "shipped") {
+    ensureSellerFulfillments(order);
+    const sellerId = req.body?.sellerId;
+
+    // Per-seller confirmation: the buyer can receive one seller's package
+    // without pretending the whole multi-seller order has arrived.
+    if (sellerId) {
+      const fulfillment = getSellerFulfillment(order, sellerId);
+      if (!fulfillment) {
+        return res
+          .status(404)
+          .json({ message: "Seller package not found in this order" });
+      }
+      const current = effectiveFulfillmentStatus(order, fulfillment);
+      if (!["shipped", "delivery-claimed"].includes(current)) {
+        return res.status(400).json({
+          message: "This seller's items must be shipped before confirmation",
+        });
+      }
+      setSellerFulfillmentStatus(
+        order,
+        sellerId,
+        "delivered",
+        "Delivery confirmed by customer",
+      );
+      if (order.status === "delivered") order.deliveredAt = new Date();
+      order.statusHistory.push({
+        status: order.status,
+        note: "Customer confirmed delivery for one seller's items",
+      });
+      await order.save();
+      return res.json({
+        success: true,
+        message: "Delivery confirmed for this seller's items",
+        order,
+      });
+    }
+
+    if (isMultiSellerOrder(order)) {
+      let confirmed = 0;
+      for (const fulfillment of order.sellerFulfillments) {
+        const current = effectiveFulfillmentStatus(order, fulfillment);
+        if (["shipped", "delivery-claimed"].includes(current)) {
+          setSellerFulfillmentStatus(
+            order,
+            fulfillment.seller,
+            "delivered",
+            "Delivery confirmed by customer",
+          );
+          confirmed += 1;
+        }
+      }
+      if (confirmed === 0) {
+        return res
+          .status(400)
+          .json({ message: "No shipped items are ready to confirm" });
+      }
+      if (order.status === "delivered") order.deliveredAt = new Date();
+      order.statusHistory.push({
+        status: order.status,
+        note: "Delivery confirmed by customer",
+      });
+      await order.save();
+      return res.json({ success: true, message: "Order marked as delivered", order });
+    }
+
+    if (!["shipped", "delivery-claimed"].includes(order.status)) {
       return res
         .status(400)
         .json({ message: "Order must be shipped before confirmation" });
@@ -397,6 +696,9 @@ export const confirmDelivery = async (req, res) => {
 
     order.status = "delivered";
     order.deliveredAt = new Date();
+    for (const fulfillment of order.sellerFulfillments || []) {
+      if (fulfillment.status !== "cancelled") fulfillment.status = "delivered";
+    }
     order.statusHistory.push({
       status: "delivered",
       note: "Delivery confirmed by customer",
@@ -428,6 +730,32 @@ export const sellerDeliveryClaim = async (req, res) => {
       }
     }
 
+    ensureSellerFulfillments(order);
+
+    // Multi-seller: claiming delivery only applies to the caller's own
+    // shipped items; the order-level status is then re-derived.
+    if (req.user.role === "seller" && isMultiSellerOrder(order)) {
+      const fulfillment = getSellerFulfillment(order, req.user._id);
+      const current = effectiveFulfillmentStatus(order, fulfillment);
+      if (current !== "shipped") {
+        return res.status(400).json({
+          message: "You can only claim delivery on your shipped items",
+        });
+      }
+      setSellerFulfillmentStatus(
+        order,
+        req.user._id,
+        "delivery-claimed",
+        "Delivery claimed by seller. Awaiting Admin finalization.",
+      );
+      await order.save();
+      return res.json({
+        success: true,
+        message: "Delivery claim filed. Admin will review and complete.",
+        order: sellerOrderView(order, req.user._id),
+      });
+    }
+
     if (order.status !== "shipped") {
       return res
         .status(400)
@@ -435,6 +763,11 @@ export const sellerDeliveryClaim = async (req, res) => {
     }
 
     order.status = "delivery-claimed";
+    for (const fulfillment of order.sellerFulfillments || []) {
+      if (fulfillment.status === "shipped") {
+        fulfillment.status = "delivery-claimed";
+      }
+    }
 
     if (order.statusHistory) {
       order.statusHistory.push({
@@ -447,7 +780,10 @@ export const sellerDeliveryClaim = async (req, res) => {
     res.json({
       success: true,
       message: "Delivery claim filed. Admin will review and complete.",
-      order,
+      order:
+        req.user.role === "seller"
+          ? sellerOrderView(order, req.user._id)
+          : order,
     });
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -467,7 +803,18 @@ export const completeOrderManually = async (req, res) => {
       });
     }
 
+    ensureSellerFulfillments(order);
     order.status = "completed";
+    for (const fulfillment of order.sellerFulfillments || []) {
+      if (fulfillment.status !== "cancelled") {
+        fulfillment.status = "completed";
+        fulfillment.statusHistory = fulfillment.statusHistory || [];
+        fulfillment.statusHistory.push({
+          status: "completed",
+          note: "Order manually finalized by Admin",
+        });
+      }
+    }
     order.statusHistory.push({
       status: "completed",
       note: "Order manually finalized by Admin",

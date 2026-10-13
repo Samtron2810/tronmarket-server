@@ -3,6 +3,7 @@ import sanitize from "mongo-sanitize"; // FIX #2
 import User from "../models/User.js";
 import Product from "../models/Product.js";
 import Order from "../models/Order.js";
+import Cart from "../models/Cart.js";
 import { invalidateProductCache, cacheDel } from "../config/redis.js";
 import {
   createVariants,
@@ -23,6 +24,7 @@ const ALLOWED_PRODUCT_FIELDS = [
   "image",
   "images",
   "isFeatured",
+  "isActive",
   "hasVariants",
   "options",
   // Not a Product field — consumed separately by variantService below.
@@ -48,7 +50,8 @@ function pickUserFields(body) {
 export const getUsers = async (req, res) => {
   try {
     const { search, page = 1, limit = 20 } = req.query;
-    const filter = {};
+    // Soft-deleted accounts disappear from the directory entirely.
+    const filter = { accountStatus: { $ne: "deleted" } };
 
     // FIX #1: Escape search before using in $regex to prevent ReDoS
     if (search && typeof search === "string") {
@@ -60,7 +63,7 @@ export const getUsers = async (req, res) => {
     }
 
     const pageNum = Math.max(Number(page) || 1, 1);
-    const perPage = Math.max(Number(limit) || 20, 1);
+    const perPage = Math.min(50, Math.max(Number(limit) || 20, 1));
     const skip = (pageNum - 1) * perPage;
 
     const total = await User.countDocuments(filter);
@@ -94,7 +97,15 @@ export const updateUserRole = async (req, res) => {
     }
 
     const user = await User.findById(req.params.id);
-    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!user || user.accountStatus === "deleted") {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    if (await wouldRemoveLastAdmin(user, role)) {
+      return res
+        .status(400)
+        .json({ message: "Cannot demote the last admin account" });
+    }
 
     user.role = role;
     await user.save();
@@ -116,20 +127,100 @@ export const updateUserRole = async (req, res) => {
 
 export const deleteUser = async (req, res) => {
   try {
-    const user = await User.findById(req.params.id);
-    if (!user) return res.status(404).json({ message: "User not found" });
-    await User.findByIdAndDelete(req.params.id);
-    res.json({ message: "User deleted" });
+    const targetId = req.params.id;
+
+    // An admin can never delete their own account through this endpoint.
+    if (String(targetId) === String(req.user._id)) {
+      return res
+        .status(400)
+        .json({ message: "You cannot delete your own account" });
+    }
+
+    const user = await User.findById(targetId);
+    if (!user || user.accountStatus === "deleted") {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Never remove the last remaining admin — the store would be locked
+    // out of its own back office.
+    if (user.role === "admin") {
+      const adminCount = await User.countDocuments({
+        role: "admin",
+        accountStatus: { $ne: "deleted" },
+      });
+      if (adminCount <= 1) {
+        return res
+          .status(400)
+          .json({ message: "Cannot delete the last admin account" });
+      }
+    }
+
+    // Soft delete: keep orders/financial history intact, anonymise the
+    // identity, and make the email address reusable for a fresh account.
+    user.name = "Deleted user";
+    user.email = `deleted-${user._id}@deleted.local`;
+    user.password = awaitUserPasswordPlaceholder();
+    user.otp = null;
+    user.otpExpiresAt = null;
+    user.otpAttempts = 0;
+    user.passwordResetOtp = null;
+    user.passwordResetOtpExpiresAt = null;
+    user.passwordResetOtpAttempts = 0;
+    user.accountStatus = "deleted";
+    user.deletedAt = new Date();
+    user.deletedBy = req.user._id;
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
+    await user.save();
+
+    // A deleted seller's listings leave the storefront (they are kept in
+    // the database so historical orders can still resolve their names),
+    // and the account's cart can no longer be used.
+    const sellerProducts = await Product.find(
+      { seller: user._id },
+      { _id: 1 },
+    ).lean();
+    await Product.updateMany(
+      { seller: user._id },
+      { $set: { isActive: false } },
+    );
+    await invalidateProductCache().catch(() => {});
+    await cacheDel(
+      `product:seller:${user._id}`,
+      ...sellerProducts.map((product) => `product:single:${product._id}`),
+    ).catch(() => {});
+    await Cart.deleteMany({ user: user._id });
+
+    res.json({
+      success: true,
+      message:
+        "User deleted. Their identity has been anonymised and any seller listings have been deactivated.",
+    });
   } catch (error) {
-    console.error("deleteUser:", error);
-    res.status(500).json({ message: "Failed to delete user." });
+    res.status(500).json({ message: error.message });
   }
 };
+
+function awaitUserPasswordPlaceholder() {
+  // Login is impossible anyway (address anonymised, status deleted); the
+  // placeholder simply guarantees no old hash remains usable.
+  return `deleted-${Date.now()}`;
+}
+
+async function wouldRemoveLastAdmin(user, nextRole) {
+  if (!user || user.role !== "admin" || nextRole === "admin") return false;
+  const adminCount = await User.countDocuments({
+    role: "admin",
+    accountStatus: { $ne: "deleted" },
+  });
+  return adminCount <= 1;
+}
 
 export const getUser = async (req, res) => {
   try {
     const user = await User.findById(req.params.id).select("-password");
-    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!user || user.accountStatus === "deleted") {
+      return res.status(404).json({ message: "User not found" });
+    }
     res.json(user);
   } catch (error) {
     console.error("getUser:", error);
@@ -140,7 +231,9 @@ export const getUser = async (req, res) => {
 export const updateUser = async (req, res) => {
   try {
     const user = await User.findById(req.params.id);
-    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!user || user.accountStatus === "deleted") {
+      return res.status(404).json({ message: "User not found" });
+    }
 
     // FIX #2 + #4: Only allow known safe fields; validate role if provided
     const VALID_ROLES = ["customer", "seller", "admin"];
@@ -150,6 +243,12 @@ export const updateUser = async (req, res) => {
       return res.status(400).json({
         message: `Invalid role. Must be one of: ${VALID_ROLES.join(", ")}`,
       });
+    }
+
+    if (role && (await wouldRemoveLastAdmin(user, role))) {
+      return res
+        .status(400)
+        .json({ message: "Cannot demote the last admin account" });
     }
 
     if (name) user.name = name;
@@ -185,7 +284,7 @@ export const getProductsByUser = async (req, res) => {
     }
 
     const pageNum = Math.max(Number(page) || 1, 1);
-    const perPage = Math.max(Number(limit) || 12, 1);
+    const perPage = Math.min(50, Math.max(Number(limit) || 12, 1));
     const skip = (pageNum - 1) * perPage;
 
     const total = await Product.countDocuments(filter);

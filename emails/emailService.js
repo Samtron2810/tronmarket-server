@@ -1,5 +1,6 @@
 import { getResend } from "../config/resend.js";
 import { otpEmailHtml } from "./templates/otpEmail.js";
+import { passwordResetEmailHtml } from "./templates/passwordResetEmail.js";
 import { orderReceiptHtml } from "./templates/orderReceiptEmail.js";
 
 const FROM_ADDRESS =
@@ -31,6 +32,38 @@ export async function sendOtpEmail(toEmail, name, otp) {
     return { success: true, data };
   } catch (err) {
     console.error("sendOtpEmail exception:", err?.message || err);
+    return { success: false, error: err?.message || err };
+  }
+}
+
+export async function sendPasswordResetEmail(toEmail, name, otp) {
+  const resend = getResend();
+  if (!resend) {
+    console.warn(
+      "sendPasswordResetEmail skipped: RESEND_API_KEY not configured.",
+    );
+    return { success: false, error: "RESEND_API_KEY not configured" };
+  }
+
+  try {
+    const { data, error } = await resend.emails.send({
+      from: FROM_ADDRESS,
+      to: toEmail,
+      subject: "Reset your TronMarket password",
+      html: passwordResetEmailHtml(name, otp),
+    });
+
+    if (error) {
+      console.error(
+        "Resend API returned an error during sendPasswordResetEmail:",
+        error,
+      );
+      return { success: false, error };
+    }
+
+    return { success: true, data };
+  } catch (err) {
+    console.error("sendPasswordResetEmail exception:", err?.message || err);
     return { success: false, error: err?.message || err };
   }
 }

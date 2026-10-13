@@ -31,10 +31,13 @@ import orderRoutes from "./routes/orderRoutes.js";
 import paymentRoutes from "./routes/paymentRoutes.js";
 import uploadRoutes from "./routes/uploadRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
+import sellerApplicationRoutes from "./routes/sellerApplicationRoutes.js";
 import { generalLimiter } from "./middlewares/rateLimiter.js";
+import { startOrderExpirySweeper } from "./services/orderExpiryService.js";
 
 await connectDB();
 connectRedis().catch(() => {});
+startOrderExpirySweeper();
 
 const app = express();
 
@@ -47,13 +50,13 @@ app.use(
 );
 app.use(
   express.json({
-    limit: "50mb",
+    limit: "1mb",
     verify: (req, res, buf) => {
       req.rawBody = buf.toString();
     },
   }),
 );
-app.use(express.urlencoded({ limit: "50mb", extended: true }));
+app.use(express.urlencoded({ limit: "1mb", extended: true }));
 app.use(cookieParser());
 app.use(generalLimiter);
 
@@ -68,6 +71,7 @@ app.use("/api/orders", orderRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/uploads", uploadRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/seller-applications", sellerApplicationRoutes);
 
 app.use(errorMiddleware);
 

@@ -47,3 +47,36 @@ export const resendOtpSchema = z.object({
     .email({ error: "Invalid email address" })
     .toLowerCase(),
 });
+
+const emailField = z
+  .string({ error: "Email is required" })
+  .trim()
+  .email({ error: "Invalid email address" })
+  .toLowerCase();
+
+const otpField = z
+  .string({ error: "Code is required" })
+  .length(6, { error: "Code must be exactly 6 digits" })
+  .regex(/^\d{6}$/, { error: "Code must contain only digits" });
+
+const newPasswordField = z
+  .string({ error: "Password is required" })
+  .min(6, { error: "Password must be at least 6 characters" })
+  .max(128, { error: "Password is too long" });
+
+export const forgotPasswordSchema = z.object({
+  email: emailField,
+});
+
+export const resetPasswordSchema = z.object({
+  email: emailField,
+  otp: otpField,
+  password: newPasswordField,
+});
+
+export const changePasswordSchema = z.object({
+  currentPassword: z
+    .string({ error: "Current password is required" })
+    .min(1, { error: "Current password is required" }),
+  newPassword: newPasswordField,
+});

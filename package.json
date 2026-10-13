@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "dev": "nodemon server.js",
-    "start": "node server.js"
+    "start": "node server.js",
+    "seed:admin": "node scripts/seedAdmin.js"
   },
   "dependencies": {
     "axios": "^1.4.0",

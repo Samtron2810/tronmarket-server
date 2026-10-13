@@ -40,6 +40,19 @@ export const protect = async (req, res, next) => {
       return res.status(401).json({ message: "User no longer exists" });
     }
 
+    // Soft-deleted accounts lose access immediately.
+    if (req.user.accountStatus === "deleted") {
+      return res.status(401).json({ message: "Account no longer exists" });
+    }
+
+    // Password reset/change bumps tokenVersion; tokens minted before that
+    // are rejected even though their 7-day expiry has not passed.
+    if ((decoded.tv ?? 0) !== (req.user.tokenVersion || 0)) {
+      return res.status(401).json({
+        message: "Session expired. Please log in again.",
+      });
+    }
+
     next();
   } catch (error) {
     return res.status(401).json({ message: "Invalid token" });

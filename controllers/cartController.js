@@ -26,7 +26,7 @@ export const addToCart = async (req, res) => {
 
     const product = await Product.findById(productId);
 
-    if (!product) {
+    if (!product || product.isActive === false) {
       return res.status(404).json({ message: "Product not found" });
     }
 
@@ -230,6 +230,19 @@ export const validateCart = async (req, res) => {
           variantLabel: item.variantLabel || "",
           name: "Unknown product",
           reason: "out_of_stock",
+          availableStock: 0,
+          cartQuantity: item.quantity,
+        });
+        continue;
+      }
+
+      if (product.isActive === false) {
+        errors.push({
+          productId: product._id,
+          variantId: item.variant?._id ?? null,
+          variantLabel: item.variantLabel || "",
+          name: product.name,
+          reason: "unavailable",
           availableStock: 0,
           cartQuantity: item.quantity,
         });

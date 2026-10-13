@@ -1,3 +1,5 @@
+import mongoose from "mongoose";
+import escapeStringRegexp from "escape-string-regexp";
 import Product from "../models/Product.js";
 import ProductVariant from "../models/ProductVariant.js";
 import {
@@ -77,28 +79,38 @@ export const getProducts = async (req, res) => {
       return res.json(cached);
     }
 
-    let filter = {};
+    // Storefront only ever shows active listings (deactivated products
+    // belong to removed sellers or paused listings).
+    let filter = { isActive: { $ne: false } };
 
-    // SEARCH (name)
-    if (search) {
-      filter.name = { $regex: search, $options: "i" };
+    // SEARCH (name) — user input is escaped before it goes anywhere near
+    // a regex, so patterns like ((a+)+$ can neither ReDoS nor 500 us.
+    if (search && typeof search === "string") {
+      const safe = escapeStringRegexp(search.trim().slice(0, 100));
+      if (safe) filter.name = { $regex: safe, $options: "i" };
     }
 
     // CATEGORY
-    if (category) {
-      filter.category = category;
+    if (category && typeof category === "string") {
+      filter.category = category.slice(0, 100);
     }
 
     // PRICE RANGE
-    if (min || max) {
+    const minPrice = Number(min);
+    const maxPrice = Number(max);
+    if (Number.isFinite(minPrice) || Number.isFinite(maxPrice)) {
       filter.price = {};
-      if (min) filter.price.$gte = Number(min);
-      if (max) filter.price.$lte = Number(max);
+      if (Number.isFinite(minPrice)) {
+        filter.price.$gte = Math.max(0, minPrice);
+      }
+      if (Number.isFinite(maxPrice)) {
+        filter.price.$lte = Math.max(0, maxPrice);
+      }
     }
 
-    // PAGINATION
-    const pageNum = Math.max(Number(page) || 1, 1);
-    const perPage = Math.max(Number(limit) || 6, 1);
+    // PAGINATION — page size is always bounded.
+    const pageNum = Math.min(10000, Math.max(Number(page) || 1, 1));
+    const perPage = Math.min(50, Math.max(Number(limit) || 6, 1));
     const skip = (pageNum - 1) * perPage;
 
     const total = await Product.countDocuments(filter);
@@ -134,7 +146,7 @@ export const getProduct = async (req, res) => {
 
     const product = await Product.findById(id).populate("variants");
 
-    if (!product) {
+    if (!product || product.isActive === false) {
       return res.status(404).json({
         message: "Product not found",
       });
@@ -302,11 +314,21 @@ export const stockCheck = async (req, res) => {
         .status(400)
         .json({ message: "productIds must be a non-empty array" });
     }
+    if (productIds.length > 50) {
+      return res.status(400).json({
+        message: "productIds is limited to 50 items per request",
+      });
+    }
+
+    // Dedupe and drop anything that isn't a valid ObjectId before querying.
+    const uniqueIds = [
+      ...new Set(productIds.map((id) => String(id))),
+    ].filter((id) => mongoose.isValidObjectId(id));
 
     // Fetch only _id, stock and hasVariants — goes directly to DB (no
     // cache) so we always get the freshest stock values.
     const products = await Product.find(
-      { _id: { $in: productIds } },
+      { _id: { $in: uniqueIds }, isActive: { $ne: false } },
       { _id: 1, stock: 1, hasVariants: 1 },
     ).lean();
 

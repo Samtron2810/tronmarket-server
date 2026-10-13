@@ -114,12 +114,59 @@ export async function claimPaymentRecord({ reference, order, userId }) {
   return payment;
 }
 
+export function paymentCompletedAt(data) {
+  const value = data?.paid_at || data?.paidAt;
+  const parsed = value ? new Date(value) : new Date();
+  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+}
+
+export function paymentDeadlineForOrder(order) {
+  if (!order) return null;
+  if (order.paymentExpiresAt) return new Date(order.paymentExpiresAt);
+  if (!order.createdAt) return null;
+  const minutes = Number(process.env.ORDER_PAYMENT_TTL_MINUTES || 30);
+  const safeMinutes = Number.isFinite(minutes)
+    ? Math.min(24 * 60, Math.max(5, minutes))
+    : 30;
+  return new Date(
+    new Date(order.createdAt).getTime() + safeMinutes * 60 * 1000,
+  );
+}
+
+// True when Paystack's own paid_at timestamp falls after the order's
+// payment deadline (stored, or derived from createdAt for legacy orders).
+// Verification may legitimately happen after the deadline — what matters
+// is when the charge itself completed.
+export function isPaymentAfterDeadline(order, data) {
+  if (!order || order.isPaid) return false;
+  const deadline = paymentDeadlineForOrder(order);
+  return Boolean(deadline && paymentCompletedAt(data) > deadline);
+}
+
 // Atomically move pending → paid. The status filter in the query is the
 // actual guard: cancelled / shipped / already-paid orders cannot match it.
-export async function transitionOrderToPaid(order, reference, source) {
-  const paidAt = new Date();
+// The payment deadline is enforced here too: a charge only counts when
+// Paystack says it was paid on or before the order's payment deadline
+// (stored on the order, or derived from createdAt for legacy orders).
+export async function transitionOrderToPaid(order, reference, source, paidAtInput) {
+  const paidAt = paidAtInput ? new Date(paidAtInput) : new Date();
+  if (isPaymentAfterDeadline(order, { paid_at: paidAt })) {
+    throw paymentError(
+      "Payment was completed after this order's payment deadline",
+      409,
+    );
+  }
   const updated = await Order.findOneAndUpdate(
-    { _id: order._id, status: "pending", isPaid: false },
+    {
+      _id: order._id,
+      status: "pending",
+      isPaid: false,
+      $or: [
+        { paymentExpiresAt: null },
+        { paymentExpiresAt: { $exists: false } },
+        { paymentExpiresAt: { $gte: paidAt } },
+      ],
+    },
     {
       $set: {
         isPaid: true,
@@ -167,6 +214,7 @@ export async function finalizeSuccessfulPayment({
     order,
     reference,
     source,
+    data?.paid_at || data?.paidAt,
   );
 
   payment.status = "success";
