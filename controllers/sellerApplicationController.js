@@ -1,5 +1,6 @@
 import SellerApplication from "../models/SellerApplication.js";
 import User from "../models/User.js";
+import { recordAudit } from "../services/auditService.js";
 
 function applicationView(application) {
   const data =
@@ -136,6 +137,17 @@ export const reviewSellerApplication = async (req, res) => {
     application.reviewedBy = req.user._id;
     application.reviewedAt = new Date();
     await application.save();
+    await recordAudit(
+      req,
+      `seller-application.${status}`,
+      { type: "SellerApplication", id: application._id },
+      {
+        applicantId: applicant._id,
+        applicantEmail: applicant.email,
+        resultingRole: applicant.role,
+        reviewNote: reviewNote || "",
+      },
+    );
 
     const populated = await SellerApplication.findById(application._id)
       .populate("user", "name email role")

@@ -11,6 +11,7 @@ import {
   deleteProductForUser,
   getOrdersByUser,
   getSellerSalesByUser,
+  getAuditLogs,
 } from "../controllers/adminController.js";
 import { protect, adminOnly } from "../middlewares/authMiddleware.js";
 import { validate } from "../middlewares/validate.js";
@@ -27,10 +28,12 @@ import {
   reviewSellerApplication,
 } from "../controllers/sellerApplicationController.js";
 import { reviewSellerApplicationSchema } from "../validations/sellerApplicationSchemas.js";
+import { validateObjectIdParams } from "../middlewares/validateObjectId.js";
 
 const router = express.Router();
 
 router.get("/users", protect, adminOnly, getUsers);
+router.get("/audit-logs", protect, adminOnly, getAuditLogs);
 
 router.get(
   "/seller-applications",
@@ -42,6 +45,7 @@ router.patch(
   "/seller-applications/:id",
   protect,
   adminOnly,
+  validateObjectIdParams("id"),
   validate(reviewSellerApplicationSchema),
   reviewSellerApplication,
 );
@@ -51,25 +55,46 @@ router.put(
   "/users/:id/role",
   protect,
   adminOnly,
+  validateObjectIdParams("id"),
   validate(updateRoleSchema),
   updateUserRole,
 );
-router.delete("/users/:id", protect, adminOnly, deleteUser);
+router.delete(
+  "/users/:id",
+  protect,
+  adminOnly,
+  validateObjectIdParams("id"),
+  deleteUser,
+);
 
-router.get("/users/:id", protect, adminOnly, getUser);
+router.get(
+  "/users/:id",
+  protect,
+  adminOnly,
+  validateObjectIdParams("id"),
+  getUser,
+);
 router.put(
   "/users/:id",
   protect,
   adminOnly,
+  validateObjectIdParams("id"),
   validate(updateUserSchema),
   updateUser,
 );
 
-router.get("/users/:id/products", protect, adminOnly, getProductsByUser);
+router.get(
+  "/users/:id/products",
+  protect,
+  adminOnly,
+  validateObjectIdParams("id"),
+  getProductsByUser,
+);
 router.post(
   "/users/:id/products",
   protect,
   adminOnly,
+  validateObjectIdParams("id"),
   validate(createProductSchema),
   createProductForUser,
 );
@@ -77,6 +102,7 @@ router.put(
   "/users/:id/products/:productId",
   protect,
   adminOnly,
+  validateObjectIdParams("id", "productId"),
   validate(updateProductSchema),
   updateProductForUser,
 );
@@ -84,13 +110,24 @@ router.delete(
   "/users/:id/products/:productId",
   protect,
   adminOnly,
+  validateObjectIdParams("id", "productId"),
   deleteProductForUser,
 );
 
-router.get("/users/:id/orders", protect, adminOnly, getOrdersByUser);
-router.get("/users/:id/seller-sales", protect, adminOnly, getSellerSalesByUser);
-
-// seller sales (orders containing this seller's products)
-router.get("/users/:id/seller-sales", protect, adminOnly, getSellerSalesByUser);
+router.get(
+  "/users/:id/orders",
+  protect,
+  adminOnly,
+  validateObjectIdParams("id"),
+  getOrdersByUser,
+);
+// Seller sales: orders containing this seller's products. Registered once.
+router.get(
+  "/users/:id/seller-sales",
+  protect,
+  adminOnly,
+  validateObjectIdParams("id"),
+  getSellerSalesByUser,
+);
 
 export default router;

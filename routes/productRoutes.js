@@ -10,6 +10,7 @@ import {
 } from "../controllers/productController.js";
 import { protect, sellerOnly } from "../middlewares/authMiddleware.js";
 import { validate } from "../middlewares/validate.js";
+import { validateObjectIdParams } from "../middlewares/validateObjectId.js";
 import {
   createProductSchema,
   updateProductSchema,
@@ -31,7 +32,7 @@ router.get("/seller/my-products", protect, sellerOnly, getMyProducts);
 router.post("/stock-check", stockCheck);
 
 // GET /api/products/:id — Public, cached via Redis
-router.get("/:id", getProduct);
+router.get("/:id", validateObjectIdParams("id"), getProduct);
 
 // POST /api/products — Seller only, Zod validates
 router.post(
@@ -47,11 +48,18 @@ router.put(
   "/:id",
   protect,
   sellerOnly,
+  validateObjectIdParams("id"),
   validate(updateProductSchema),
   updateProduct,
 );
 
 // DELETE /api/products/:id — Seller only, invalidates cache
-router.delete("/:id", protect, sellerOnly, deleteProduct);
+router.delete(
+  "/:id",
+  protect,
+  sellerOnly,
+  validateObjectIdParams("id"),
+  deleteProduct,
+);
 
 export default router;

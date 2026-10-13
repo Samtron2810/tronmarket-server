@@ -126,13 +126,13 @@ export function orderReceiptHtml(order, customerName) {
                       <tr>
                         <td style="font-size:13px;color:#555555;padding-bottom:6px;">Subtotal</td>
                         <td style="text-align:right;font-size:13px;color:#555555;font-family:'Courier New',monospace;padding-bottom:6px;">
-                          ₦${Number(order.totalPrice || 0).toLocaleString("en-NG")}
+                          ₦${Number(order.itemsSubtotal ?? Math.max(0, Number(order.totalPrice || 0) - Number(order.shippingPrice || 0))).toLocaleString("en-NG")}
                         </td>
                       </tr>
                       <tr>
-                        <td style="font-size:13px;color:#555555;padding-bottom:12px;">Shipping Fee</td>
+                        <td style="font-size:13px;color:#555555;padding-bottom:12px;">Shipping Fee${order.shippingZone ? ` (${order.shippingZone})` : ""}</td>
                         <td style="text-align:right;padding-bottom:12px;">
-                          <span style="font-size:11px;font-weight:800;color:#16a34a;background:#f0fdf4;padding:2px 8px;border-radius:20px;border:1px solid #bbf7d0;">FREE</span>
+                          ${Number(order.shippingPrice || 0) === 0 ? `<span style="font-size:11px;font-weight:800;color:#16a34a;background:#f0fdf4;padding:2px 8px;border-radius:20px;border:1px solid #bbf7d0;">FREE</span>` : `<span style="font-size:13px;color:#555555;font-family:'Courier New',monospace;">₦${Number(order.shippingPrice).toLocaleString("en-NG")}</span>`}
                         </td>
                       </tr>
                       <tr style="border-top:1px solid #e5e7eb;">

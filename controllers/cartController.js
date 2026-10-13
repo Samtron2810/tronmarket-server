@@ -93,6 +93,73 @@ export const addToCart = async (req, res) => {
   }
 };
 
+export const mergeGuestCart = async (req, res) => {
+  try {
+    const guestItems = Array.isArray(req.body?.items) ? req.body.items : [];
+    let cart = await Cart.findOne({ user: req.user._id });
+    if (!cart) cart = await Cart.create({ user: req.user._id, items: [] });
+
+    const merged = [];
+    const skipped = [];
+
+    for (const guestItem of guestItems) {
+      const product = await Product.findById(guestItem.productId);
+      if (!product || product.isActive === false) {
+        skipped.push({ productId: guestItem.productId, reason: "unavailable" });
+        continue;
+      }
+
+      let variant;
+      try {
+        ({ variant } = await resolvePurchasable(product, guestItem.variantId));
+      } catch {
+        skipped.push({ productId: guestItem.productId, reason: "unavailable" });
+        continue;
+      }
+
+      const available = purchasableStock(product, variant);
+      if (!available || available <= 0) {
+        skipped.push({ productId: guestItem.productId, reason: "out_of_stock" });
+        continue;
+      }
+
+      const existingItem = cart.items.find((item) =>
+        lineMatches(item, guestItem.productId, variant?._id),
+      );
+      const desired = (existingItem?.quantity || 0) + guestItem.quantity;
+      const quantity = Math.min(desired, available);
+
+      if (existingItem) {
+        existingItem.quantity = quantity;
+      } else {
+        cart.items.push({
+          product: guestItem.productId,
+          variant: variant?._id ?? null,
+          variantLabel: variant ? variantLabel(variant.attributes) : "",
+          sku: variant?.sku ?? "",
+          quantity,
+        });
+      }
+
+      merged.push({
+        productId: guestItem.productId,
+        variantId: variant?._id ?? null,
+        quantity,
+        capped: quantity < desired,
+      });
+    }
+
+    await cart.save();
+    const populated = await Cart.findById(cart._id)
+      .populate("items.product")
+      .populate("items.variant");
+
+    return res.json({ cart: populated, merged, skipped });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
 export const getCart = async (req, res) => {
   try {
     const cart = await Cart.findOne({ user: req.user._id })

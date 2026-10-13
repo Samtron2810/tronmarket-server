@@ -14,6 +14,8 @@
 // Legacy orders created before fulfilments existed are backfilled in memory
 // from their items + global status the first time they are touched.
 
+import { commissionFor, getCommissionRate, money } from "./pricingService.js";
+
 const ACTIVE_LIKE = [
   "paid",
   "processing",
@@ -42,12 +44,28 @@ export function groupOrderItemsBySeller(orderItems = []) {
 }
 
 export function buildSellerFulfillments(orderItems = [], status = "pending") {
+  const rate = getCommissionRate();
   return groupOrderItemsBySeller(orderItems).map((group) => ({
     seller: group.seller,
     status,
-    subtotal: group.subtotal,
+    subtotal: money(group.subtotal),
+    ...commissionFor(group.subtotal, rate),
+    payoutStatus: status === "cancelled" ? "cancelled" : "not-eligible",
     statusHistory: [{ status, note: "Order placed" }],
   }));
+}
+
+export function payoutStatusFor(order, fulfillment) {
+  if (!fulfillment) return "not-eligible";
+  if (fulfillment.payoutStatus === "paid") return "paid";
+  const status = effectiveFulfillmentStatus(order, fulfillment);
+  if (order?.status === "cancelled" || status === "cancelled") {
+    return "cancelled";
+  }
+  if (order?.isPaid && ["delivered", "completed"].includes(status)) {
+    return "eligible";
+  }
+  return "not-eligible";
 }
 
 function initialFulfillmentStatus(order) {
@@ -92,7 +110,12 @@ export function ensureSellerFulfillments(order) {
       order.sellerFulfillments.push({
         seller: group.seller,
         status: initialFulfillmentStatus(order),
-        subtotal: group.subtotal,
+        subtotal: money(group.subtotal),
+        ...commissionFor(
+          group.subtotal,
+          order.commissionRate ?? getCommissionRate(),
+        ),
+        payoutStatus: "not-eligible",
         statusHistory: [
           {
             status: initialFulfillmentStatus(order),
@@ -102,7 +125,38 @@ export function ensureSellerFulfillments(order) {
       });
       fulfillment = order.sellerFulfillments[order.sellerFulfillments.length - 1];
     }
-    fulfillment.subtotal = group.subtotal;
+    fulfillment.subtotal = money(group.subtotal);
+    const rate =
+      fulfillment.commissionRate ?? order.commissionRate ?? getCommissionRate();
+    const split = commissionFor(group.subtotal, rate);
+    fulfillment.commissionRate = split.commissionRate;
+    fulfillment.commissionAmount = split.commissionAmount;
+    fulfillment.payoutAmount = split.payoutAmount;
+    fulfillment.payoutStatus = payoutStatusFor(order, fulfillment);
+  }
+
+  // Keep order-level money snapshots in step for legacy orders that were
+  // created before items/shipping/commission were separated.
+  if ("itemsSubtotal" in order && !order.itemsSubtotal) {
+    order.itemsSubtotal = money(
+      groups.reduce((sum, group) => sum + group.subtotal, 0),
+    );
+  }
+  if ("commissionTotal" in order) {
+    order.commissionTotal = money(
+      order.sellerFulfillments.reduce(
+        (sum, f) => sum + Number(f.commissionAmount || 0),
+        0,
+      ),
+    );
+  }
+  if ("sellerPayoutTotal" in order) {
+    order.sellerPayoutTotal = money(
+      order.sellerFulfillments.reduce(
+        (sum, f) => sum + Number(f.payoutAmount || 0),
+        0,
+      ),
+    );
   }
 
   return order.sellerFulfillments;
@@ -193,6 +247,11 @@ export function sellerOrderView(order, sellerId) {
     // Sellers see their own money, never the whole order's total.
     totalPrice: subtotal,
     sellerSubtotal: subtotal,
+    sellerCommissionRate: fulfillment?.commissionRate ?? 0,
+    sellerCommissionAmount: fulfillment?.commissionAmount ?? 0,
+    sellerPayoutAmount:
+      fulfillment?.payoutAmount ?? subtotal,
+    payoutStatus: payoutStatusFor(plain, fulfillment),
     sellerStatus: status,
     status,
     sellerFulfillments: fulfillment
@@ -201,6 +260,10 @@ export function sellerOrderView(order, sellerId) {
             seller: fulfillment.seller,
             status,
             subtotal,
+            commissionRate: fulfillment.commissionRate ?? 0,
+            commissionAmount: fulfillment.commissionAmount ?? 0,
+            payoutAmount: fulfillment.payoutAmount ?? subtotal,
+            payoutStatus: payoutStatusFor(plain, fulfillment),
             statusHistory: fulfillment.statusHistory || [],
           },
         ]

@@ -12,6 +12,12 @@ import {
   deleteAllVariants,
   syncProductSummary,
 } from "../services/variantService.js";
+import AuditLog from "../models/AuditLog.js";
+import { recordAudit } from "../services/auditService.js";
+import {
+  deleteCloudinaryImages,
+  removedImageUrls,
+} from "../services/cloudinaryCleanupService.js";
 
 // FIX #2: Explicit whitelist of product fields an admin may set
 const ALLOWED_PRODUCT_FIELDS = [
@@ -84,6 +90,35 @@ export const getUsers = async (req, res) => {
   }
 };
 
+export const getAuditLogs = async (req, res) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit) || 20));
+    const filter = {};
+    if (req.query.action) filter.action = String(req.query.action).slice(0, 100);
+    if (req.query.actor) filter.actor = req.query.actor;
+
+    const [logs, total] = await Promise.all([
+      AuditLog.find(filter)
+        .sort("-createdAt")
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+      AuditLog.countDocuments(filter),
+    ]);
+
+    return res.json({
+      logs,
+      page,
+      totalPages: Math.ceil(total / limit),
+      total,
+    });
+  } catch (error) {
+    console.error("getAuditLogs:", error);
+    return res.status(500).json({ message: "Failed to fetch audit logs." });
+  }
+};
+
 export const updateUserRole = async (req, res) => {
   try {
     // FIX #4: Validate role value — only allow known roles
@@ -107,8 +142,15 @@ export const updateUserRole = async (req, res) => {
         .json({ message: "Cannot demote the last admin account" });
     }
 
+    const previousRole = user.role;
     user.role = role;
     await user.save();
+    await recordAudit(
+      req,
+      "user.role-changed",
+      { type: "User", id: user._id },
+      { previousRole, newRole: role, userEmail: user.email },
+    );
 
     res.json({
       message: "Role updated",
@@ -155,6 +197,8 @@ export const deleteUser = async (req, res) => {
       }
     }
 
+    const deletedIdentity = { email: user.email, role: user.role };
+
     // Soft delete: keep orders/financial history intact, anonymise the
     // identity, and make the email address reusable for a fresh account.
     user.name = "Deleted user";
@@ -189,6 +233,12 @@ export const deleteUser = async (req, res) => {
       ...sellerProducts.map((product) => `product:single:${product._id}`),
     ).catch(() => {});
     await Cart.deleteMany({ user: user._id });
+    await recordAudit(
+      req,
+      "user.deleted",
+      { type: "User", id: user._id },
+      deletedIdentity,
+    );
 
     res.json({
       success: true,
@@ -251,11 +301,27 @@ export const updateUser = async (req, res) => {
         .json({ message: "Cannot demote the last admin account" });
     }
 
+    const previous = { name: user.name, email: user.email, role: user.role };
     if (name) user.name = name;
     if (email) user.email = email;
     if (role) user.role = role;
 
     await user.save();
+    if (role && role !== previous.role) {
+      await recordAudit(
+        req,
+        "user.role-changed",
+        { type: "User", id: user._id },
+        { previousRole: previous.role, newRole: role, userEmail: user.email },
+      );
+    } else {
+      await recordAudit(
+        req,
+        "user.updated",
+        { type: "User", id: user._id },
+        { previous, next: { name: user.name, email: user.email, role: user.role } },
+      );
+    }
 
     res.json({
       message: "User updated",
@@ -344,6 +410,7 @@ export const updateProductForUser = async (req, res) => {
     const product = await Product.findById(req.params.productId);
     if (!product) return res.status(404).json({ message: "Product not found" });
 
+    const previousImageUrls = [product.image, ...(product.images || [])];
     const { variants, ...updatePayload } = pickProductFields(req.body);
     if (updatePayload.images && updatePayload.images.length > 0) {
       updatePayload.image = updatePayload.images[0];
@@ -376,6 +443,19 @@ export const updateProductForUser = async (req, res) => {
       req.params.productId,
     ).populate("variants");
 
+    if (
+      updatePayload.image !== undefined ||
+      updatePayload.images !== undefined
+    ) {
+      await deleteCloudinaryImages(
+        removedImageUrls(previousImageUrls, [
+          updated.image,
+          ...(updated.images || []),
+        ]),
+        updated._id,
+      );
+    }
+
     // Invalidate list cache, single-product cache, and seller cache
     await invalidateProductCache();
     await cacheDel(
@@ -395,8 +475,10 @@ export const deleteProductForUser = async (req, res) => {
     const product = await Product.findById(req.params.productId);
     if (!product) return res.status(404).json({ message: "Product not found" });
 
+    const imageUrls = [product.image, ...(product.images || [])];
     await deleteAllVariants(req.params.productId);
     await Product.findByIdAndDelete(req.params.productId);
+    await deleteCloudinaryImages(imageUrls);
 
     // Invalidate list cache, single-product cache, and seller cache
     await invalidateProductCache();

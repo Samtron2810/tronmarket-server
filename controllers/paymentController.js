@@ -5,6 +5,7 @@ import Order from "../models/Order.js";
 import Payment from "../models/Payment.js";
 import User from "../models/User.js";
 import { sendOrderReceiptEmail } from "../emails/emailService.js";
+import { notifySellersOrderPaid } from "../services/orderNotificationService.js";
 import {
   PAYMENT_CURRENCY,
   applyRefundWebhook,
@@ -361,6 +362,7 @@ export const verifyPayment = async (req, res) => {
         req.user.name,
         paidOrder.toObject(),
       );
+      void notifySellersOrderPaid(paidOrder);
     }
 
     return res.status(200).json({
@@ -492,6 +494,7 @@ export const paystackWebhook = async (req, res) => {
 
       if (transitioned && buyer?.email) {
         sendOrderReceiptEmail(buyer.email, buyer.name, paidOrder.toObject());
+        void notifySellersOrderPaid(paidOrder);
       }
     }
 

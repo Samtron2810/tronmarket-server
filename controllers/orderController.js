@@ -22,6 +22,12 @@ import {
   expireOrderIfDue,
   sweepExpiredOrders,
 } from "../services/orderExpiryService.js";
+import {
+  shippingForSubtotal,
+  getCommissionRate,
+} from "../services/pricingService.js";
+import { notifyBuyerOrderStatus } from "../services/orderNotificationService.js";
+import { recordAudit } from "../services/auditService.js";
 
 export const createOrder = async (req, res) => {
   try {
@@ -222,10 +228,19 @@ export const createOrder = async (req, res) => {
     const orderItems = planned.map(
       ({ productDoc, variantDoc, ...line }) => line,
     );
-    const totalPrice = orderItems.reduce(
+    const itemsSubtotal = orderItems.reduce(
       (acc, item) => acc + item.price * item.quantity,
       0,
     );
+    // Shipping is always calculated by the server from the delivery state;
+    // a client-supplied amount is never trusted.
+    const shipping = shippingForSubtotal(
+      itemsSubtotal,
+      shippingAddress?.state,
+    );
+    const totalPrice = itemsSubtotal + shipping.amount;
+    const commissionRate = getCommissionRate();
+    const sellerFulfillments = buildSellerFulfillments(orderItems);
 
     // If order creation itself fails, every decremented unit goes back —
     // stock must never leak on a failed checkout.
@@ -234,7 +249,19 @@ export const createOrder = async (req, res) => {
       order = await Order.create({
         user: req.user._id,
         orderItems,
-        sellerFulfillments: buildSellerFulfillments(orderItems),
+        sellerFulfillments,
+        itemsSubtotal,
+        shippingPrice: shipping.amount,
+        shippingZone: shipping.zone,
+        commissionRate,
+        commissionTotal: sellerFulfillments.reduce(
+          (sum, f) => sum + Number(f.commissionAmount || 0),
+          0,
+        ),
+        sellerPayoutTotal: sellerFulfillments.reduce(
+          (sum, f) => sum + Number(f.payoutAmount || 0),
+          0,
+        ),
         totalPrice,
         shippingAddress,
         paymentExpiresAt: newPaymentDeadline(),
@@ -291,6 +318,100 @@ export const createOrder = async (req, res) => {
     res.status(201).json(order);
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+};
+
+export const getShippingQuote = async (req, res) => {
+  try {
+    const state = String(req.query.state || "").trim();
+    if (!state) {
+      return res
+        .status(400)
+        .json({ message: "Delivery state is required for a shipping quote" });
+    }
+
+    const cart = await Cart.findOne({ user: req.user._id })
+      .populate("items.product")
+      .populate("items.variant");
+    if (!cart || cart.items.length === 0) {
+      return res.status(400).json({ message: "Cart is empty" });
+    }
+
+    const itemsSubtotal = cart.items.reduce((sum, item) => {
+      const price = Number(item.variant?.price ?? item.product?.price ?? 0);
+      return sum + price * Number(item.quantity || 0);
+    }, 0);
+    const shipping = shippingForSubtotal(itemsSubtotal, state);
+
+    return res.json({
+      state,
+      itemsSubtotal,
+      shippingPrice: shipping.amount,
+      shippingZone: shipping.zone,
+      freeShipping: shipping.freeShipping,
+      totalPrice: itemsSubtotal + shipping.amount,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+export const getOrderInvoice = async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.id).populate(
+      "user",
+      "name email",
+    );
+    if (!order) return res.status(404).json({ message: "Order not found" });
+
+    const isOwner = order.user?._id?.toString() === req.user._id.toString();
+    const isAdmin = req.user.role === "admin";
+    if (isOwner || isAdmin) {
+      ensureSellerFulfillments(order);
+      return res.json({
+        invoiceType: "full",
+        order: {
+          ...order.toObject(),
+          invoice: {
+            itemsSubtotal:
+              order.itemsSubtotal ||
+              Math.max(0, order.totalPrice - (order.shippingPrice || 0)),
+            shippingPrice: order.shippingPrice || 0,
+            shippingZone: order.shippingZone || "",
+            totalPrice: order.totalPrice,
+            commissionTotal: order.commissionTotal || 0,
+            sellerPayoutTotal: order.sellerPayoutTotal || 0,
+          },
+        },
+      });
+    }
+
+    if (req.user.role === "seller") {
+      const view = sellerOrderView(order, req.user._id);
+      if (view.orderItems.length > 0) {
+        return res.json({
+          invoiceType: "seller",
+          order: {
+            ...view,
+            invoice: {
+              itemsSubtotal: view.sellerSubtotal,
+              commissionRate: view.sellerCommissionRate,
+              commissionAmount: view.sellerCommissionAmount,
+              payoutAmount: view.sellerPayoutAmount,
+              payoutStatus: view.payoutStatus,
+              // Sellers do not see the buyer's delivery charge or other
+              // sellers' amounts on their payout statement.
+              shippingPrice: 0,
+              totalPrice: view.sellerSubtotal,
+            },
+          },
+        });
+      }
+    }
+
+    return res.status(403).json({ message: "Not authorized for this invoice" });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
   }
 };
 
@@ -430,6 +551,7 @@ export const updateOrderStatus = async (req, res) => {
         note || `Seller updated their items to ${status}`,
       );
       await order.save();
+      void notifyBuyerOrderStatus(order, order.status);
       return res.json(sellerOrderView(order, req.user._id));
     }
 
@@ -468,6 +590,14 @@ export const updateOrderStatus = async (req, res) => {
           note: note || `Cancelled by ${req.user.role}`,
           refundReason: `Order cancelled by ${req.user.role}`,
         });
+        if (req.user.role === "admin") {
+          await recordAudit(
+            req,
+            "order.cancelled",
+            { type: "Order", id: order._id },
+            { note: note || "", totalPrice: order.totalPrice },
+          );
+        }
         return res.json(cancelledOrder);
       } catch (error) {
         return res
@@ -475,6 +605,8 @@ export const updateOrderStatus = async (req, res) => {
           .json({ message: error.message });
       }
     }
+
+    const previousStatus = order.status;
 
     // Keep fulfilment records in step with whole-order transitions
     // (admin actions, and single-seller orders where seller == order).
@@ -501,6 +633,15 @@ export const updateOrderStatus = async (req, res) => {
     }
 
     await order.save();
+    void notifyBuyerOrderStatus(order, status);
+    if (req.user.role === "admin") {
+      await recordAudit(
+        req,
+        "order.status-changed",
+        { type: "Order", id: order._id },
+        { previousStatus, newStatus: status, note: note || "" },
+      );
+    }
 
     res.json(order);
   } catch (error) {
@@ -685,6 +826,9 @@ export const confirmDelivery = async (req, res) => {
         note: "Delivery confirmed by customer",
       });
       await order.save();
+      if (order.status === "delivered") {
+        void notifyBuyerOrderStatus(order, "delivered");
+      }
       return res.json({ success: true, message: "Order marked as delivered", order });
     }
 
@@ -704,6 +848,7 @@ export const confirmDelivery = async (req, res) => {
       note: "Delivery confirmed by customer",
     });
     await order.save();
+    void notifyBuyerOrderStatus(order, "delivered");
 
     res.json({ success: true, message: "Order marked as delivered", order });
   } catch (error) {
@@ -804,6 +949,7 @@ export const completeOrderManually = async (req, res) => {
     }
 
     ensureSellerFulfillments(order);
+    const previousStatus = order.status;
     order.status = "completed";
     for (const fulfillment of order.sellerFulfillments || []) {
       if (fulfillment.status !== "cancelled") {
@@ -820,6 +966,13 @@ export const completeOrderManually = async (req, res) => {
       note: "Order manually finalized by Admin",
     });
     await order.save();
+    void notifyBuyerOrderStatus(order, "completed");
+    await recordAudit(
+      req,
+      "order.manually-completed",
+      { type: "Order", id: order._id },
+      { previousStatus, newStatus: "completed" },
+    );
 
     res.json({
       success: true,

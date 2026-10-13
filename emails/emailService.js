@@ -68,6 +68,32 @@ export async function sendPasswordResetEmail(toEmail, name, otp) {
   }
 }
 
+export async function sendEmailSafe({ to, subject, html } = {}) {
+  if (!to || !subject || !html) return { success: false };
+  const resend = getResend();
+  if (!resend) {
+    console.warn("sendEmailSafe skipped: RESEND_API_KEY not configured.");
+    return { success: false, error: "RESEND_API_KEY not configured" };
+  }
+
+  try {
+    const { data, error } = await resend.emails.send({
+      from: FROM_ADDRESS,
+      to,
+      subject,
+      html,
+    });
+    if (error) {
+      console.error("Resend API returned an error during sendEmailSafe:", error);
+      return { success: false, error };
+    }
+    return { success: true, data };
+  } catch (err) {
+    console.error("sendEmailSafe exception:", err?.message || err);
+    return { success: false, error: err?.message || err };
+  }
+}
+
 export async function sendOrderReceiptEmail(toEmail, customerName, order) {
   const resend = getResend();
   if (!resend) return;

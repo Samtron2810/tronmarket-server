@@ -52,10 +52,20 @@ const sellerFulfillmentSchema = new mongoose.Schema(
       ],
       default: "pending",
     },
-    // This seller's share of totalPrice (their items only).
+    // This seller's share of the items subtotal (their items only).
     subtotal: {
       type: Number,
       default: 0,
+    },
+    // Money split snapshot (see services/pricingService.js): the platform
+    // keeps commissionAmount; payoutAmount is what the seller is owed.
+    commissionRate: { type: Number, default: 0 },
+    commissionAmount: { type: Number, default: 0 },
+    payoutAmount: { type: Number, default: 0 },
+    payoutStatus: {
+      type: String,
+      enum: ["not-eligible", "eligible", "paid", "cancelled"],
+      default: "not-eligible",
     },
     statusHistory: {
       type: [
@@ -82,6 +92,15 @@ const orderSchema = new mongoose.Schema(
     orderItems: [orderItemSchema],
 
     sellerFulfillments: [sellerFulfillmentSchema],
+
+    // What the buyer pays: itemsSubtotal + shippingPrice. totalPrice is
+    // kept as the payable grand total for compatibility with payments.
+    itemsSubtotal: { type: Number, default: 0 },
+    shippingPrice: { type: Number, default: 0 },
+    shippingZone: { type: String, default: "" },
+    commissionRate: { type: Number, default: 0 },
+    commissionTotal: { type: Number, default: 0 },
+    sellerPayoutTotal: { type: Number, default: 0 },
 
     totalPrice: {
       type: Number,
@@ -176,6 +195,7 @@ const orderSchema = new mongoose.Schema(
 );
 
 orderSchema.index({ status: 1, paymentExpiresAt: 1 });
+orderSchema.index({ status: 1, deliveredAt: -1 });
 orderSchema.index({ "sellerFulfillments.seller": 1, createdAt: -1 });
 orderSchema.index({ user: 1, createdAt: -1 });
 

@@ -22,3 +22,16 @@ export const addToCartSchema = z.object({
 export const updateCartItemSchema = z.object({
   quantity,
 });
+
+export const mergeCartSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        productId: objectId,
+        variantId: objectId.nullable().optional(),
+        quantity,
+      }),
+    )
+    .max(100, { error: "Too many guest cart items to merge" })
+    .default([]),
+});

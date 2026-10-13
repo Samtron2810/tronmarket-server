@@ -16,6 +16,10 @@ import {
   invalidateProductCache,
   productCacheKey,
 } from "../config/redis.js";
+import {
+  deleteCloudinaryImages,
+  removedImageUrls,
+} from "../services/cloudinaryCleanupService.js";
 
 // ── CACHE TTL SETTINGS ──
 // Reduce from 5 minutes to 1.5 minutes (90 seconds) so stock changes
@@ -29,6 +33,9 @@ export const createProduct = async (req, res) => {
     const payload = {
       ...rest,
       seller: req.user._id,
+      // Featuring is an admin merchandising decision. A seller-supplied
+      // isFeatured flag is ignored rather than allowed to self-promote.
+      isFeatured: req.user.role === "admin" ? Boolean(rest.isFeatured) : false,
     };
 
     // if images array provided in body set images and primary image
@@ -190,10 +197,16 @@ export const updateProduct = async (req, res) => {
       return res.status(403).json({ message: "Unauthorized" });
     }
 
-    // Whitelist fields — don't spread raw req.body
+    const previousImageUrls = [product.image, ...(product.images || [])];
+
+    // Whitelist fields — don't spread raw req.body. isFeatured is kept out
+    // of ALLOWED_FIELDS and only an admin may change it.
     const updatePayload = {};
     for (const field of ALLOWED_FIELDS) {
       if (req.body[field] !== undefined) updatePayload[field] = req.body[field];
+    }
+    if (req.user.role === "admin" && req.body.isFeatured !== undefined) {
+      updatePayload.isFeatured = Boolean(req.body.isFeatured);
     }
 
     if (updatePayload.images && updatePayload.images.length > 0) {
@@ -229,6 +242,19 @@ export const updateProduct = async (req, res) => {
 
     const updated = await Product.findById(req.params.id).populate("variants");
 
+    if (
+      updatePayload.image !== undefined ||
+      updatePayload.images !== undefined
+    ) {
+      await deleteCloudinaryImages(
+        removedImageUrls(previousImageUrls, [
+          updated.image,
+          ...(updated.images || []),
+        ]),
+        updated._id,
+      );
+    }
+
     await invalidateProductCache();
     await cacheDel(`product:single:${req.params.id}`);
     await cacheDel(`product:seller:${req.user._id}`);
@@ -258,8 +284,10 @@ export const deleteProduct = async (req, res) => {
       });
     }
 
+    const imageUrls = [product.image, ...(product.images || [])];
     await deleteAllVariants(req.params.id);
     await Product.findByIdAndDelete(req.params.id);
+    await deleteCloudinaryImages(imageUrls);
 
     // Invalidate cache
     await invalidateProductCache();

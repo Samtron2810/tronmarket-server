@@ -4,6 +4,7 @@ import ProductVariant from "../models/ProductVariant.js";
 import { syncProductSummary } from "./variantService.js";
 import { invalidateProductCache, cacheDel } from "../config/redis.js";
 import { initiateRefundForOrder, paymentError } from "./paymentService.js";
+import { notifyBuyerOrderStatus } from "./orderNotificationService.js";
 
 // ─── Order cancellation ─────────────────────────────────────────────────────
 // Every cancellation path (customer cancel button, seller/admin status
@@ -115,6 +116,7 @@ export async function cancelOrderWithRefund(
   }
 
   await restoreOrderStock(claimed);
+  void notifyBuyerOrderStatus(claimed, "cancelled");
 
   return { order: claimed, alreadyCancelled: false, refund };
 }
