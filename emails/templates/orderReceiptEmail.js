@@ -51,7 +51,7 @@ export function orderReceiptHtml(order, customerName) {
                 <tr>
                   <td>
                     <span style="font-size:26px;font-weight:900;letter-spacing:-0.5px;">
-                      <span style="color:#1A1A1A;">TRON</span><span style="color:#ffffff;">MARKET</span>
+                      <span style="color:#1A1A1A;">Tron</span><span style="color:#ffffff;">Market</span>
                     </span>
                     <p style="margin:4px 0 0;font-size:12px;color:#1A1A1A;opacity:0.7;">Official E-Receipt</p>
                   </td>
