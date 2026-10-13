@@ -8,6 +8,27 @@ const cartItemSchema = new mongoose.Schema(
       required: true,
     },
 
+    // The chosen ProductVariant document (null for legacy no-variant
+    // products). A cart line is uniquely product + variant: the same
+    // product in Black/M and White/L is two lines.
+    variant: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ProductVariant",
+      default: null,
+    },
+
+    // Snapshots so the cart renders correctly even if the variant is
+    // later edited or deactivated.
+    variantLabel: {
+      type: String,
+      default: "",
+    },
+
+    sku: {
+      type: String,
+      default: "",
+    },
+
     quantity: {
       type: Number,
       required: true,

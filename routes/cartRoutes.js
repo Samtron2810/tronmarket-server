@@ -21,8 +21,12 @@ router.post("/", addToCart);
 // so Express does not match "validate" as a productId param
 router.post("/validate", validateCart);
 
+// Variant-aware line addressing: /:productId/:variantId identifies one
+// variant line; the /:productId-only form still matches legacy lines.
+router.put("/:productId/:variantId", updateCartItem);
 router.put("/:productId", updateCartItem);
 
+router.delete("/:productId/:variantId", removeCartItem);
 router.delete("/:productId", removeCartItem);
 
 router.delete("/", clearCart);

@@ -4,6 +4,13 @@ import User from "../models/User.js";
 import Product from "../models/Product.js";
 import Order from "../models/Order.js";
 import { invalidateProductCache, cacheDel } from "../config/redis.js";
+import {
+  createVariants,
+  replaceVariants,
+  deactivateAllVariants,
+  deleteAllVariants,
+  syncProductSummary,
+} from "../services/variantService.js";
 
 // FIX #2: Explicit whitelist of product fields an admin may set
 const ALLOWED_PRODUCT_FIELDS = [
@@ -16,6 +23,10 @@ const ALLOWED_PRODUCT_FIELDS = [
   "image",
   "images",
   "isFeatured",
+  "hasVariants",
+  "options",
+  // Not a Product field — consumed separately by variantService below.
+  "variants",
 ];
 
 function pickProductFields(body) {
@@ -178,7 +189,10 @@ export const getProductsByUser = async (req, res) => {
     const skip = (pageNum - 1) * perPage;
 
     const total = await Product.countDocuments(filter);
-    const products = await Product.find(filter).skip(skip).limit(perPage);
+    const products = await Product.find(filter)
+      .skip(skip)
+      .limit(perPage)
+      .populate("variants");
 
     res.json({
       products,
@@ -194,8 +208,9 @@ export const getProductsByUser = async (req, res) => {
 
 export const createProductForUser = async (req, res) => {
   try {
+    const { variants, ...picked } = pickProductFields(req.body);
     const payload = {
-      ...pickProductFields(req.body),
+      ...picked,
       seller: req.params.id,
     };
     if (payload.images && payload.images.length > 0) {
@@ -203,10 +218,22 @@ export const createProductForUser = async (req, res) => {
     }
     const product = await Product.create(payload);
 
+    try {
+      if (product.hasVariants) {
+        await createVariants(product, variants || []);
+        await syncProductSummary(product._id);
+      }
+    } catch (variantError) {
+      await deleteAllVariants(product._id);
+      await Product.findByIdAndDelete(product._id);
+      throw variantError;
+    }
+
     // Invalidate cache so new product appears immediately
     await invalidateProductCache();
 
-    res.status(201).json(product);
+    const created = await Product.findById(product._id).populate("variants");
+    res.status(201).json(created);
   } catch (error) {
     console.error("createProductForUser:", error);
     res.status(500).json({ message: "Failed to create product." });
@@ -218,18 +245,37 @@ export const updateProductForUser = async (req, res) => {
     const product = await Product.findById(req.params.productId);
     if (!product) return res.status(404).json({ message: "Product not found" });
 
-    const updatePayload = pickProductFields(req.body);
+    const { variants, ...updatePayload } = pickProductFields(req.body);
     if (updatePayload.images && updatePayload.images.length > 0) {
       updatePayload.image = updatePayload.images[0];
     } else if (updatePayload.image) {
       updatePayload.images = [updatePayload.image];
     }
 
-    const updated = await Product.findByIdAndUpdate(
+    const hasVariantsNow =
+      updatePayload.hasVariants !== undefined
+        ? updatePayload.hasVariants
+        : product.hasVariants;
+
+    if (hasVariantsNow && variants !== undefined) {
+      await Product.findByIdAndUpdate(req.params.productId, updatePayload);
+      const fresh = await Product.findById(req.params.productId);
+      await replaceVariants(fresh, variants || []);
+      await syncProductSummary(req.params.productId);
+    } else if (updatePayload.hasVariants === false && product.hasVariants) {
+      await deactivateAllVariants(req.params.productId);
+      await Product.findByIdAndUpdate(req.params.productId, {
+        ...updatePayload,
+        variantCount: 0,
+      });
+    } else {
+      await Product.findByIdAndUpdate(req.params.productId, updatePayload);
+      if (hasVariantsNow) await syncProductSummary(req.params.productId);
+    }
+
+    const updated = await Product.findById(
       req.params.productId,
-      updatePayload,
-      { new: true },
-    );
+    ).populate("variants");
 
     // Invalidate list cache, single-product cache, and seller cache
     await invalidateProductCache();
@@ -250,6 +296,7 @@ export const deleteProductForUser = async (req, res) => {
     const product = await Product.findById(req.params.productId);
     if (!product) return res.status(404).json({ message: "Product not found" });
 
+    await deleteAllVariants(req.params.productId);
     await Product.findByIdAndDelete(req.params.productId);
 
     // Invalidate list cache, single-product cache, and seller cache

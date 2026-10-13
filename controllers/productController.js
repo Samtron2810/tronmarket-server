@@ -1,4 +1,12 @@
 import Product from "../models/Product.js";
+import ProductVariant from "../models/ProductVariant.js";
+import {
+  createVariants,
+  replaceVariants,
+  deactivateAllVariants,
+  deleteAllVariants,
+  syncProductSummary,
+} from "../services/variantService.js";
 import {
   cacheGet,
   cacheSet,
@@ -15,8 +23,9 @@ const SINGLE_PRODUCT_CACHE_TTL = 300; // 5 minutes (less critical)
 
 export const createProduct = async (req, res) => {
   try {
+    const { variants, ...rest } = req.body;
     const payload = {
-      ...req.body,
+      ...rest,
       seller: req.user._id,
     };
 
@@ -29,10 +38,24 @@ export const createProduct = async (req, res) => {
 
     const product = await Product.create(payload);
 
+    try {
+      if (product.hasVariants) {
+        await createVariants(product, variants || []);
+        await syncProductSummary(product._id);
+      }
+    } catch (variantError) {
+      // Roll back the half-created product so a bad variant payload
+      // never leaves an orphan listing behind.
+      await deleteAllVariants(product._id);
+      await Product.findByIdAndDelete(product._id);
+      throw variantError;
+    }
+
     // Invalidate product cache so new product appears in listings
     await invalidateProductCache();
 
-    res.status(201).json(product);
+    const created = await Product.findById(product._id).populate("variants");
+    res.status(201).json(created);
   } catch (error) {
     res.status(500).json({
       message: error.message,
@@ -109,7 +132,7 @@ export const getProduct = async (req, res) => {
       return res.json(cached);
     }
 
-    const product = await Product.findById(id);
+    const product = await Product.findById(id).populate("variants");
 
     if (!product) {
       return res.status(404).json({
@@ -138,6 +161,8 @@ const ALLOWED_FIELDS = [
   "stock",
   "image",
   "images",
+  "hasVariants",
+  "options",
 ];
 
 export const updateProduct = async (req, res) => {
@@ -165,11 +190,32 @@ export const updateProduct = async (req, res) => {
       updatePayload.images = [updatePayload.image];
     }
 
-    const updated = await Product.findByIdAndUpdate(
-      req.params.id,
-      updatePayload,
-      { new: true },
-    );
+    const hasVariantsNow =
+      updatePayload.hasVariants !== undefined
+        ? updatePayload.hasVariants
+        : product.hasVariants;
+
+    if (hasVariantsNow && req.body.variants !== undefined) {
+      // Variants must exist before syncProductSummary can derive the
+      // product's price/stock from them.
+      await Product.findByIdAndUpdate(req.params.id, updatePayload);
+      const fresh = await Product.findById(req.params.id);
+      await replaceVariants(fresh, req.body.variants || []);
+      await syncProductSummary(req.params.id);
+    } else if (updatePayload.hasVariants === false && product.hasVariants) {
+      // Switching variants off: deactivate variants, payload price/stock
+      // become authoritative again.
+      await deactivateAllVariants(req.params.id);
+      await Product.findByIdAndUpdate(req.params.id, {
+        ...updatePayload,
+        variantCount: 0,
+      });
+    } else {
+      await Product.findByIdAndUpdate(req.params.id, updatePayload);
+      if (hasVariantsNow) await syncProductSummary(req.params.id);
+    }
+
+    const updated = await Product.findById(req.params.id).populate("variants");
 
     await invalidateProductCache();
     await cacheDel(`product:single:${req.params.id}`);
@@ -200,6 +246,7 @@ export const deleteProduct = async (req, res) => {
       });
     }
 
+    await deleteAllVariants(req.params.id);
     await Product.findByIdAndDelete(req.params.id);
 
     // Invalidate cache
@@ -242,7 +289,10 @@ export const getMyProducts = async (req, res) => {
 // live stock warnings / availability before the user attempts to add to cart
 // or checkout. This endpoint is NOT cached — always hits the DB for real-time data.
 // Body: { productIds: string[] }
-// Returns: { stocks: { [productId]: number } }
+// Returns: {
+//   stocks:   { [productId]: number },                    // total (legacy shape, kept)
+//   variants: { [productId]: { [variantId]: number } }    // per-variant stock
+// }
 export const stockCheck = async (req, res) => {
   try {
     const { productIds } = req.body;
@@ -253,11 +303,11 @@ export const stockCheck = async (req, res) => {
         .json({ message: "productIds must be a non-empty array" });
     }
 
-    // Fetch only _id and stock — no need for full product documents
-    // Goes directly to DB (no cache) so we always get the freshest stock value
+    // Fetch only _id, stock and hasVariants — goes directly to DB (no
+    // cache) so we always get the freshest stock values.
     const products = await Product.find(
       { _id: { $in: productIds } },
-      { _id: 1, stock: 1 },
+      { _id: 1, stock: 1, hasVariants: 1 },
     ).lean();
 
     const stocks = {};
@@ -265,7 +315,34 @@ export const stockCheck = async (req, res) => {
       stocks[p._id.toString()] = p.stock ?? 0;
     });
 
-    res.json({ stocks });
+    const variantProducts = products.filter((p) => p.hasVariants);
+    const variants = {};
+    if (variantProducts.length > 0) {
+      const variantDocs = await ProductVariant.find(
+        {
+          product: { $in: variantProducts.map((p) => p._id) },
+          isActive: true,
+        },
+        { _id: 1, product: 1, stock: 1 },
+      ).lean();
+
+      for (const v of variantDocs) {
+        const pid = v.product.toString();
+        if (!variants[pid]) variants[pid] = {};
+        variants[pid][v._id.toString()] = v.stock ?? 0;
+      }
+      // Totals for variant products are the sum of ACTIVE variant stock,
+      // which may differ from the stored summary between syncs.
+      for (const p of variantProducts) {
+        const byVariant = variants[p._id.toString()] || {};
+        stocks[p._id.toString()] = Object.values(byVariant).reduce(
+          (a, b) => a + b,
+          0,
+        );
+      }
+    }
+
+    res.json({ stocks, variants });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

@@ -1,9 +1,28 @@
 import Cart from "../models/Cart.js";
 import Product from "../models/Product.js";
+import ProductVariant from "../models/ProductVariant.js";
+import {
+  resolvePurchasable,
+  purchasableStock,
+  variantLabel,
+} from "../services/variantService.js";
+
+// A cart line is product + variant. Legacy no-variant lines have
+// variant === null and keep matching on product alone.
+function lineMatches(item, productId, variantId) {
+  if (item.product.toString() !== productId.toString()) return false;
+  const itemVariant = item.variant ? item.variant.toString() : "";
+  return itemVariant === (variantId ? variantId.toString() : "");
+}
+
+async function loadVariant(item) {
+  if (!item.variant) return null;
+  return ProductVariant.findById(item.variant);
+}
 
 export const addToCart = async (req, res) => {
   try {
-    const { productId, quantity } = req.body;
+    const { productId, variantId, quantity } = req.body;
 
     const product = await Product.findById(productId);
 
@@ -11,16 +30,23 @@ export const addToCart = async (req, res) => {
       return res.status(404).json({ message: "Product not found" });
     }
 
-    // check stock
-    if (!product.stock || product.stock <= 0) {
+    let variant;
+    try {
+      ({ variant } = await resolvePurchasable(product, variantId));
+    } catch (err) {
+      return res.status(400).json({ message: err.message });
+    }
+
+    const available = purchasableStock(product, variant);
+    if (!available || available <= 0) {
       return res.status(400).json({ message: "Product is out of stock" });
     }
 
     const qty = Number(quantity) || 1;
-    if (qty > product.stock) {
+    if (qty > available) {
       return res
         .status(400)
-        .json({ message: `Only ${product.stock} left in stock` });
+        .json({ message: `Only ${available} left in stock` });
     }
 
     let cart = await Cart.findOne({ user: req.user._id });
@@ -29,20 +55,26 @@ export const addToCart = async (req, res) => {
       cart = await Cart.create({ user: req.user._id, items: [] });
     }
 
-    const existingItem = cart.items.find(
-      (item) => item.product.toString() === productId,
+    const existingItem = cart.items.find((item) =>
+      lineMatches(item, productId, variant?._id),
     );
 
     if (existingItem) {
       const newQty = existingItem.quantity + qty;
-      if (newQty > product.stock) {
+      if (newQty > available) {
         return res
           .status(400)
-          .json({ message: `Only ${product.stock} left in stock` });
+          .json({ message: `Only ${available} left in stock` });
       }
       existingItem.quantity = newQty;
     } else {
-      cart.items.push({ product: productId, quantity: qty });
+      cart.items.push({
+        product: productId,
+        variant: variant?._id ?? null,
+        variantLabel: variant ? variantLabel(variant.attributes) : "",
+        sku: variant?.sku ?? "",
+        quantity: qty,
+      });
     }
 
     await cart.save();
@@ -55,9 +87,9 @@ export const addToCart = async (req, res) => {
 
 export const getCart = async (req, res) => {
   try {
-    const cart = await Cart.findOne({ user: req.user._id }).populate(
-      "items.product",
-    );
+    const cart = await Cart.findOne({ user: req.user._id })
+      .populate("items.product")
+      .populate("items.variant");
 
     if (!cart) {
       return res.json({ items: [] });
@@ -83,25 +115,32 @@ export const updateCartItem = async (req, res) => {
       return res.status(404).json({ message: "Cart not found" });
     }
 
-    const item = cart.items.find(
-      (item) => item.product.toString() === req.params.productId,
+    const item = cart.items.find((i) =>
+      lineMatches(i, req.params.productId, req.params.variantId),
     );
     if (!item) {
       return res.status(404).json({ message: "Item not found" });
     }
 
-    // Stock validation — fetch the product to check current stock
+    // Stock validation against the variant when the line has one.
     const product = await Product.findById(req.params.productId);
     if (!product) {
       return res.status(404).json({ message: "Product not found" });
     }
-    if (product.stock <= 0) {
-      return res.status(400).json({ message: "Product is out of stock" });
-    }
-    if (qty > product.stock) {
+    const variant = await loadVariant(item);
+    if (item.variant && (!variant || !variant.isActive)) {
       return res
         .status(400)
-        .json({ message: `Only ${product.stock} left in stock` });
+        .json({ message: "This variant is no longer available" });
+    }
+    const available = purchasableStock(product, variant);
+    if (available <= 0) {
+      return res.status(400).json({ message: "Product is out of stock" });
+    }
+    if (qty > available) {
+      return res
+        .status(400)
+        .json({ message: `Only ${available} left in stock` });
     }
 
     item.quantity = qty;
@@ -122,7 +161,7 @@ export const removeCartItem = async (req, res) => {
     }
 
     cart.items = cart.items.filter(
-      (item) => item.product.toString() !== req.params.productId,
+      (item) => !lineMatches(item, req.params.productId, req.params.variantId),
     );
 
     await cart.save();
@@ -156,12 +195,13 @@ export const clearCart = async (req, res) => {
 // @access Private
 // Called by the frontend before placing an order to catch cases where
 // another user bought the last item after this user added it to their cart.
-// Returns { valid: boolean, errors: [{ productId, name, reason, availableStock, cartQuantity }] }
+// Stock is checked per variant for variant products.
+// Returns { valid: boolean, errors: [{ productId, variantId, variantLabel, name, reason, availableStock, cartQuantity }] }
 export const validateCart = async (req, res) => {
   try {
-    const cart = await Cart.findOne({ user: req.user._id }).populate(
-      "items.product",
-    );
+    const cart = await Cart.findOne({ user: req.user._id })
+      .populate("items.product")
+      .populate("items.variant");
 
     if (!cart || cart.items.length === 0) {
       return res.json({ valid: true, errors: [] });
@@ -176,6 +216,8 @@ export const validateCart = async (req, res) => {
       if (!product) {
         errors.push({
           productId: item.product,
+          variantId: item.variant ?? null,
+          variantLabel: item.variantLabel || "",
           name: "Unknown product",
           reason: "out_of_stock",
           availableStock: 0,
@@ -184,12 +226,42 @@ export const validateCart = async (req, res) => {
         continue;
       }
 
-      const available = product.stock ?? 0;
+      // Variant was deleted or deactivated after being added
+      if (item.variant && (!item.variant.isActive || !item.variant.product)) {
+        errors.push({
+          productId: product._id,
+          variantId: item.variant._id ?? item.variant,
+          variantLabel: item.variantLabel || "",
+          name: product.name,
+          reason: "unavailable",
+          availableStock: 0,
+          cartQuantity: item.quantity,
+        });
+        continue;
+      }
+      if (product.hasVariants && !item.variant) {
+        errors.push({
+          productId: product._id,
+          variantId: null,
+          variantLabel: item.variantLabel || "",
+          name: product.name,
+          reason: "unavailable",
+          availableStock: 0,
+          cartQuantity: item.quantity,
+        });
+        continue;
+      }
+
+      const available = item.variant
+        ? (item.variant.stock ?? 0)
+        : (product.stock ?? 0);
       const inCart = item.quantity;
 
       if (available === 0) {
         errors.push({
           productId: product._id,
+          variantId: item.variant?._id ?? null,
+          variantLabel: item.variantLabel || "",
           name: product.name,
           reason: "out_of_stock",
           availableStock: 0,
@@ -198,6 +270,8 @@ export const validateCart = async (req, res) => {
       } else if (available < inCart) {
         errors.push({
           productId: product._id,
+          variantId: item.variant?._id ?? null,
+          variantLabel: item.variantLabel || "",
           name: product.name,
           reason: "insufficient",
           availableStock: available,

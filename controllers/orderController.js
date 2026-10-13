@@ -1,41 +1,107 @@
 import Cart from "../models/Cart.js";
 import Order from "../models/Order.js";
 import Product from "../models/Product.js";
+import ProductVariant from "../models/ProductVariant.js";
+import {
+  variantLabel as buildVariantLabel,
+  syncProductSummary,
+} from "../services/variantService.js";
 import { invalidateProductCache, cacheDel } from "../config/redis.js";
 
 export const createOrder = async (req, res) => {
   try {
     const { shippingAddress } = req.body;
 
-    const cart = await Cart.findOne({ user: req.user._id }).populate(
-      "items.product",
-    );
+    const cart = await Cart.findOne({ user: req.user._id })
+      .populate("items.product")
+      .populate("items.variant");
 
     if (!cart || cart.items.length === 0) {
       return res.status(400).json({ message: "Cart is empty" });
     }
 
-    const orderItems = cart.items
-      .filter(
-        (item) => item.product && item.product.stock && item.product.stock > 0,
-      )
-      .map((item) => ({
-        product: item.product._id,
-        name: item.product.name,
-        image: item.product.image,
-        seller: item.product.seller,
-        price: item.product.price,
-        quantity: Math.min(item.quantity, item.product.stock),
-      }));
+    // Plan order lines from server-side truth (variant price/stock when a
+    // variant is chosen — never prices sent by the client).
+    const planned = [];
+    for (const item of cart.items) {
+      const product = item.product;
+      if (!product) continue;
 
+      const variant = item.variant ?? null;
+      if (product.hasVariants && (!variant || !variant.isActive)) continue;
+
+      const available = variant ? (variant.stock ?? 0) : (product.stock ?? 0);
+      if (available <= 0) continue;
+
+      const quantity = Math.min(item.quantity, available);
+      planned.push({
+        productDoc: product,
+        variantDoc: variant,
+        product: product._id,
+        variant: variant?._id,
+        variantLabel:
+          item.variantLabel ||
+          (variant ? buildVariantLabel(variant.attributes) : ""),
+        sku: item.sku || variant?.sku || "",
+        name: product.name,
+        image: variant?.image || product.image,
+        seller: product.seller,
+        price: variant ? variant.price : product.price,
+        quantity,
+      });
+    }
+
+    if (planned.length === 0) {
+      return res.status(400).json({ message: "No available items in cart" });
+    }
+
+    // Atomically decrement stock per line (variant document when present).
+    // The stock >= qty filter makes overselling the last unit impossible;
+    // on any failure, already-taken stock is returned and no order is made.
+    const decremented = [];
+    for (const line of planned) {
+      const updated = line.variantDoc
+        ? await ProductVariant.findOneAndUpdate(
+            {
+              _id: line.variantDoc._id,
+              isActive: true,
+              stock: { $gte: line.quantity },
+            },
+            { $inc: { stock: -line.quantity } },
+            { new: true },
+          )
+        : await Product.findOneAndUpdate(
+            { _id: line.productDoc._id, stock: { $gte: line.quantity } },
+            { $inc: { stock: -line.quantity } },
+            { new: true },
+          );
+
+      if (!updated) {
+        for (const done of decremented) {
+          if (done.variantDoc) {
+            await ProductVariant.findByIdAndUpdate(done.variantDoc._id, {
+              $inc: { stock: done.quantity },
+            });
+          } else {
+            await Product.findByIdAndUpdate(done.productDoc._id, {
+              $inc: { stock: done.quantity },
+            });
+          }
+        }
+        return res.status(400).json({
+          message: `Insufficient stock for ${line.name}${line.variantLabel ? ` (${line.variantLabel})` : ""}`,
+        });
+      }
+      decremented.push(line);
+    }
+
+    const orderItems = planned.map(
+      ({ productDoc, variantDoc, ...line }) => line,
+    );
     const totalPrice = orderItems.reduce(
       (acc, item) => acc + item.price * item.quantity,
       0,
     );
-
-    if (orderItems.length === 0) {
-      return res.status(400).json({ message: "No available items in cart" });
-    }
 
     const order = await Order.create({
       user: req.user._id,
@@ -45,13 +111,14 @@ export const createOrder = async (req, res) => {
       statusHistory: [{ status: "pending", note: "Order placed" }],
     });
 
-    const decrementPromises = orderItems.map((item) =>
-      Product.findByIdAndUpdate(item.product, {
-        $inc: { stock: -item.quantity },
-      }),
-    );
-
-    await Promise.all(decrementPromises);
+    // Keep derived product summaries in step with variant stock changes.
+    const affectedProductIds = [
+      ...new Set(planned.map((l) => l.product.toString())),
+    ];
+    for (const pid of affectedProductIds) {
+      const doc = planned.find((l) => l.product.toString() === pid).productDoc;
+      if (doc.hasVariants) await syncProductSummary(pid);
+    }
 
     const sellerIds = [
       ...new Set(orderItems.map((item) => item.seller?.toString())),
@@ -251,11 +318,23 @@ export const cancelOrder = async (req, res) => {
     if (order.orderItems?.length > 0) {
       await Promise.all(
         order.orderItems.map((item) =>
-          Product.findByIdAndUpdate(item.product, {
-            $inc: { stock: item.quantity },
-          }),
+          item.variant
+            ? ProductVariant.findByIdAndUpdate(item.variant, {
+                $inc: { stock: item.quantity },
+              })
+            : Product.findByIdAndUpdate(item.product, {
+                $inc: { stock: item.quantity },
+              }),
         ),
       );
+
+      // Variant restocks change derived product totals.
+      for (const pid of [
+        ...new Set(order.orderItems.map((i) => i.product.toString())),
+      ]) {
+        const prod = await Product.findById(pid).select("hasVariants");
+        if (prod?.hasVariants) await syncProductSummary(pid);
+      }
 
       const sellerIds = [
         ...new Set(order.orderItems.map((item) => item.seller?.toString())),

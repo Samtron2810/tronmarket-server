@@ -11,6 +11,15 @@ const orderItemSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
     },
+    // Chosen variant (reference kept for restocking on cancel; the label,
+    // SKU and price snapshots below are the historical record and survive
+    // later variant edits/deactivation).
+    variant: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ProductVariant",
+    },
+    variantLabel: String,
+    sku: String,
     name: String,
     image: String,
     price: Number,

@@ -20,6 +20,7 @@ export function orderReceiptHtml(order, customerName) {
       <tr>
         <td style="padding:12px 0;border-bottom:1px solid #f0f0f0;vertical-align:top;">
           <p style="margin:0;font-size:14px;font-weight:700;color:#1A1A1A;">${item.name || "Item"}</p>
+          ${item.variantLabel ? `<p style="margin:4px 0 0;font-size:12px;color:#047857;">${item.variantLabel}</p>` : ""}
           <p style="margin:4px 0 0;font-size:12px;color:#888888;">Qty: ${qty} × ₦${price.toLocaleString("en-NG")}</p>
         </td>
         <td style="padding:12px 0;border-bottom:1px solid #f0f0f0;text-align:right;vertical-align:top;font-size:14px;font-weight:700;color:#1A1A1A;font-family:'Courier New',monospace;white-space:nowrap;">
@@ -51,7 +52,7 @@ export function orderReceiptHtml(order, customerName) {
                 <tr>
                   <td>
                     <span style="font-size:26px;font-weight:900;letter-spacing:-0.5px;">
-                      <span style="color:#1A1A1A;">Tron</span><span style="color:#ffffff;">Market</span>
+                      <span style="color:#1A1A1A;">TRON</span><span style="color:#ffffff;">MARKET</span>
                     </span>
                     <p style="margin:4px 0 0;font-size:12px;color:#1A1A1A;opacity:0.7;">Official E-Receipt</p>
                   </td>
