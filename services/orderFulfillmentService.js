@@ -210,10 +210,12 @@ export function deriveOrderStatus(order) {
 }
 
 // Advance one seller's fulfilment and re-derive the order status.
-export function setSellerFulfillmentStatus(order, sellerId, status, note) {
+export function setSellerFulfillmentStatus(order, sellerId, status, note, tracking = {}) {
   const fulfillment = getSellerFulfillment(order, sellerId);
   if (!fulfillment) return null;
   fulfillment.status = status;
+  if (tracking.carrier !== undefined) fulfillment.carrier = String(tracking.carrier || "").slice(0, 80);
+  if (tracking.trackingNumber !== undefined) fulfillment.trackingNumber = String(tracking.trackingNumber || "").slice(0, 120);
   fulfillment.statusHistory = fulfillment.statusHistory || [];
   fulfillment.statusHistory.push({ status, note: note || "" });
   order.status = deriveOrderStatus(order);

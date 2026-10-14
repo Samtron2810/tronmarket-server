@@ -5,6 +5,7 @@ import {
   sendOtpEmail,
   sendPasswordResetEmail,
 } from "../emails/emailService.js";
+import { twoFactorPendingToken } from "./accountController.js";
 import {
   startSession,
   rotateSession,
@@ -401,6 +402,14 @@ export const loginUser = async (req, res) => {
         message: "Please verify your email before logging in.",
         requiresVerification: true,
         email: user.email,
+      });
+    }
+
+    if (user.twoFactor?.enabled) {
+      return res.json({
+        requiresTwoFactor: true,
+        pendingToken: twoFactorPendingToken(user),
+        message: "Enter the 6-digit code from your authenticator app.",
       });
     }
 

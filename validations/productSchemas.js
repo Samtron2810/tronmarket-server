@@ -208,6 +208,8 @@ const productObject = z.object({
     .optional()
     .default([]),
   isFeatured: z.boolean().optional(),
+  isDraft: z.boolean().optional(),
+  isActive: z.boolean().optional(),
   hasVariants: z.boolean().optional().default(false),
   options: z.array(optionSchema).optional().default([]),
   variants: z.array(variantInputSchema).optional().default([]),

@@ -53,6 +53,10 @@ const cartSchema = new mongoose.Schema(
     },
 
     items: [cartItemSchema],
+
+    // Last time an abandoned-cart recovery email was sent for the cart's
+    // current contents (compared against updatedAt so edits re-arm it).
+    lastAbandonedReminderAt: { type: Date, default: null },
   },
   {
     timestamps: true,

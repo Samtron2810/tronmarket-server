@@ -27,11 +27,15 @@ import {
   getCommissionRate,
 } from "../services/pricingService.js";
 import { notifyBuyerOrderStatus } from "../services/orderNotificationService.js";
+import {
+  evaluateCoupon,
+  redeemCoupon,
+} from "../services/couponService.js";
 import { recordAudit } from "../services/auditService.js";
 
 export const createOrder = async (req, res) => {
   try {
-    const { shippingAddress } = req.body;
+    const { shippingAddress, couponCode } = req.body;
 
     const cart = await Cart.findOne({ user: req.user._id })
       .populate("items.product")
@@ -232,13 +236,31 @@ export const createOrder = async (req, res) => {
       (acc, item) => acc + item.price * item.quantity,
       0,
     );
+    // Coupons reduce the items subtotal; shipping is then calculated from
+    // the discounted subtotal using server-side zone pricing.
+    let appliedCoupon = null;
+    let discountAmount = 0;
+    if (couponCode) {
+      try {
+        const evaluated = await evaluateCoupon(couponCode, itemsSubtotal);
+        appliedCoupon = evaluated.coupon;
+        discountAmount = evaluated.discount;
+      } catch (couponError) {
+        await restoreLines(decremented);
+        return res
+          .status(couponError.statusCode || 400)
+          .json({ message: couponError.message });
+      }
+    }
+    const discountedSubtotal = Math.max(0, itemsSubtotal - discountAmount);
+
     // Shipping is always calculated by the server from the delivery state;
     // a client-supplied amount is never trusted.
     const shipping = shippingForSubtotal(
-      itemsSubtotal,
+      discountedSubtotal,
       shippingAddress?.state,
     );
-    const totalPrice = itemsSubtotal + shipping.amount;
+    const totalPrice = discountedSubtotal + shipping.amount;
     const commissionRate = getCommissionRate();
     const sellerFulfillments = buildSellerFulfillments(orderItems);
 
@@ -251,6 +273,8 @@ export const createOrder = async (req, res) => {
         orderItems,
         sellerFulfillments,
         itemsSubtotal,
+        couponCode: appliedCoupon?.code || "",
+        discountAmount,
         shippingPrice: shipping.amount,
         shippingZone: shipping.zone,
         commissionRate,
@@ -270,6 +294,12 @@ export const createOrder = async (req, res) => {
     } catch (createError) {
       await restoreLines(decremented);
       throw createError;
+    }
+
+    if (appliedCoupon) {
+      await redeemCoupon(appliedCoupon).catch((error) =>
+        console.error("Coupon redeem failed:", error?.message || error),
+      );
     }
 
     // Post-creation bookkeeping is best-effort: the order exists, so a
@@ -549,6 +579,7 @@ export const updateOrderStatus = async (req, res) => {
         req.user._id,
         status,
         note || `Seller updated their items to ${status}`,
+        status === "shipped" ? { carrier: req.body.carrier, trackingNumber: req.body.trackingNumber } : {},
       );
       await order.save();
       void notifyBuyerOrderStatus(order, order.status);
@@ -617,6 +648,10 @@ export const updateOrderStatus = async (req, res) => {
         fulfillment.seller?.toString() === req.user._id.toString()
       ) {
         fulfillment.status = status;
+        if (status === "shipped") {
+          if (req.body.carrier !== undefined) fulfillment.carrier = String(req.body.carrier || "").slice(0, 80);
+          if (req.body.trackingNumber !== undefined) fulfillment.trackingNumber = String(req.body.trackingNumber || "").slice(0, 120);
+        }
         fulfillment.statusHistory = fulfillment.statusHistory || [];
         fulfillment.statusHistory.push({
           status,
@@ -683,13 +718,37 @@ export const getOrders = async (req, res) => {
     const limit = Math.min(50, parseInt(req.query.limit) || 20);
     const skip = (page - 1) * limit;
 
+    // Support lookup: search by (partial) order id, buyer email/name, or
+    // filter by status — user input stays escaped (H7 rules).
+    const filter = {};
+    if (req.query.status) filter.status = String(req.query.status).slice(0, 30);
+    const rawSearch = String(req.query.search || "").trim().slice(0, 100);
+    if (rawSearch) {
+      const safe = rawSearch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const rx = { $regex: safe, $options: "i" };
+      filter.$or = [{ email: rx }, { name: rx }];
+      const hex = rawSearch.replace(/[^a-fA-F0-9]/g, "");
+      if (hex.length >= 6) {
+        // Partial ObjectId lookup via string comparison on the id.
+        filter.$or.push({
+          $expr: {
+            $regexMatch: {
+              input: { $toString: "$_id" },
+              regex: hex,
+              options: "i",
+            },
+          },
+        });
+      }
+    }
+
     const [orders, total] = await Promise.all([
-      Order.find({})
+      Order.find(filter)
         .populate("user", "name email")
         .sort("-createdAt")
         .skip(skip)
         .limit(limit),
-      Order.countDocuments({}),
+      Order.countDocuments(filter),
     ]);
 
     res.json({

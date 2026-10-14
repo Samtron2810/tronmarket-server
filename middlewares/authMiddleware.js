@@ -94,3 +94,24 @@ export const sellerOrAdmin = (req, res, next) => {
     });
   }
 };
+
+// Attaches req.user when a valid access token is present, but never blocks
+// anonymous traffic (used where owners/admins may preview hidden listings).
+export const optionalAuth = async (req, res, next) => {
+  try {
+    const header = req.headers.authorization || "";
+    if (!header.startsWith("Bearer")) return next();
+    const token = header.split(" ")[1];
+    if (!token) return next();
+    if (await isTokenBlacklisted(token).catch(() => false)) return next();
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    if (decoded.typ !== "access") return next();
+    const user = await User.findById(decoded.id).select("-password");
+    if (user && user.accountStatus !== "deleted" && (decoded.tv ?? 0) === (user.tokenVersion || 0)) {
+      req.user = user;
+    }
+  } catch {
+    // Anonymous by design.
+  }
+  return next();
+};

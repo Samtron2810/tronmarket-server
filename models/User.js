@@ -1,5 +1,18 @@
 import mongoose from "mongoose";
 
+const savedAddressSchema = new mongoose.Schema(
+  {
+    label: { type: String, trim: true, maxlength: 40, default: "Home" },
+    fullName: { type: String, required: true, trim: true, maxlength: 120 },
+    phone: { type: String, required: true, trim: true, maxlength: 30 },
+    address: { type: String, required: true, trim: true, maxlength: 300 },
+    city: { type: String, required: true, trim: true, maxlength: 80 },
+    state: { type: String, required: true, trim: true, maxlength: 80 },
+    isDefault: { type: Boolean, default: false },
+  },
+  { timestamps: true },
+);
+
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, required: true },
@@ -25,6 +38,28 @@ const userSchema = new mongoose.Schema(
     passwordResetOtpExpiresAt: { type: Date, default: null },
     passwordResetOtpAttempts: { type: Number, default: 0 },
     passwordResetOtpLastSentAt: { type: Date, default: null },
+
+    // ── Email change (re-verification required) ─────────────────────────────
+    pendingEmail: { type: String, default: null },
+    emailChangeOtp: { type: String, default: null }, // hashed 6-digit code
+    emailChangeOtpExpiresAt: { type: Date, default: null },
+    emailChangeOtpAttempts: { type: Number, default: 0 },
+
+    // ── Profile extras ───────────────────────────────────────────────────────
+    savedAddresses: { type: [savedAddressSchema], default: [] },
+    wishlist: {
+      type: [{ type: mongoose.Schema.Types.ObjectId, ref: "Product" }],
+      default: [],
+    },
+    // Set when an admin approves the seller application — shown as a
+    // "Verified Seller" badge on the storefront.
+    sellerVerified: { type: Boolean, default: false },
+
+    // ── Two-factor auth (TOTP; required-optional for admins) ────────────────
+    twoFactor: {
+      enabled: { type: Boolean, default: false },
+      secret: { type: String, default: null }, // base32 TOTP secret
+    },
 
     // Bumped whenever credentials change so previously issued JWTs stop
     // working (the value travels in the token as `tv`).

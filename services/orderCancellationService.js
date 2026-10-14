@@ -116,6 +116,10 @@ export async function cancelOrderWithRefund(
   }
 
   await restoreOrderStock(claimed);
+  if (claimed.couponCode) {
+    const { releaseCoupon } = await import("./couponService.js");
+    await releaseCoupon(claimed.couponCode).catch(() => {});
+  }
   void notifyBuyerOrderStatus(claimed, "cancelled");
 
   return { order: claimed, alreadyCancelled: false, refund };

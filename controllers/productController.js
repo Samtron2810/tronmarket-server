@@ -36,6 +36,11 @@ export const createProduct = async (req, res) => {
       // Featuring is an admin merchandising decision. A seller-supplied
       // isFeatured flag is ignored rather than allowed to self-promote.
       isFeatured: req.user.role === "admin" ? Boolean(rest.isFeatured) : false,
+      // New seller listings enter the moderation queue; admin listings and
+      // drafts are handled directly.
+      isDraft: Boolean(rest.isDraft),
+      isActive: rest.isDraft ? false : rest.isActive !== false,
+      moderationStatus: req.user.role === "admin" ? "approved" : "pending",
     };
 
     // if images array provided in body set images and primary image
@@ -74,7 +79,7 @@ export const createProduct = async (req, res) => {
 
 export const getProducts = async (req, res) => {
   try {
-    const { search, category, min, max, page = 1, limit = 6 } = req.query;
+    const { search, category, brand, featured, sort, min, max, page = 1, limit = 6 } = req.query;
 
     // Try to get from cache first
     // Cache key is based on all filter parameters so different searches
@@ -86,20 +91,45 @@ export const getProducts = async (req, res) => {
       return res.json(cached);
     }
 
-    // Storefront only ever shows active listings (deactivated products
-    // belong to removed sellers or paused listings).
-    let filter = { isActive: { $ne: false } };
+    // Storefront only ever shows active, published, moderation-cleared
+    // listings (drafts, paused listings, pending/rejected moderation and
+    // deactivated products stay hidden).
+    let filter = {
+      isActive: { $ne: false },
+      isDraft: { $ne: true },
+      // "approved" plus legacy documents that predate moderation (no field).
+      $and: [
+        {
+          $or: [
+            { moderationStatus: "approved" },
+            { moderationStatus: { $exists: false } },
+          ],
+        },
+      ],
+    };
 
-    // SEARCH (name) — user input is escaped before it goes anywhere near
-    // a regex, so patterns like ((a+)+$ can neither ReDoS nor 500 us.
+    // SEARCH across name/brand/category/description — user input is escaped
+    // before it goes anywhere near a regex, so patterns like ((a+)+$ can
+    // neither ReDoS nor 500 us. The text index covers the same fields.
     if (search && typeof search === "string") {
       const safe = escapeStringRegexp(search.trim().slice(0, 100));
-      if (safe) filter.name = { $regex: safe, $options: "i" };
+      if (safe) {
+        const rx = { $regex: safe, $options: "i" };
+        filter.$or = [{ name: rx }, { brand: rx }, { category: rx }, { description: rx }];
+      }
     }
 
     // CATEGORY
     if (category && typeof category === "string") {
       filter.category = category.slice(0, 100);
+    }
+
+    if (brand && typeof brand === "string") {
+      filter.brand = { $regex: `^${escapeStringRegexp(brand.trim().slice(0, 100))}$`, $options: "i" };
+    }
+
+    if (featured === "1" || featured === "true") {
+      filter.isFeatured = true;
     }
 
     // PRICE RANGE
@@ -120,9 +150,22 @@ export const getProducts = async (req, res) => {
     const perPage = Math.min(50, Math.max(Number(limit) || 6, 1));
     const skip = (pageNum - 1) * perPage;
 
+    const sortMap = {
+      newest: { createdAt: -1 },
+      "price-asc": { price: 1 },
+      "price-desc": { price: -1 },
+      name: { name: 1 },
+      rating: { rating: -1 },
+    };
+    const sortSpec = sortMap[sort] || { createdAt: -1 };
+
     const total = await Product.countDocuments(filter);
 
-    const products = await Product.find(filter).skip(skip).limit(perPage);
+    const products = await Product.find(filter)
+      .sort(sortSpec)
+      .skip(skip)
+      .limit(perPage)
+      .populate("seller", "name email role sellerVerified");
 
     const result = {
       products,
@@ -148,15 +191,30 @@ export const getProduct = async (req, res) => {
     const cacheKey = `product:single:${id}`;
     const cached = await cacheGet(cacheKey);
     if (cached) {
+      const ownerCached =
+        req.user &&
+        (req.user.role === "admin" || String(cached.seller?._id || cached.seller) === String(req.user._id));
+      if (!ownerCached && (cached.isDraft || cached.moderationStatus === "pending" || cached.moderationStatus === "rejected")) {
+        return res.status(404).json({ message: "Product not found" });
+      }
       return res.json(cached);
     }
 
-    const product = await Product.findById(id).populate("variants");
+    const product = await Product.findById(id)
+      .populate("variants")
+      .populate("seller", "name email role sellerVerified");
 
     if (!product || product.isActive === false) {
       return res.status(404).json({
         message: "Product not found",
       });
+    }
+
+    const isOwnerOrAdmin =
+      req.user &&
+      (req.user.role === "admin" || String(product.seller?._id || product.seller) === String(req.user._id));
+    if (!isOwnerOrAdmin && (product.isDraft || product.moderationStatus === "pending" || product.moderationStatus === "rejected")) {
+      return res.status(404).json({ message: "Product not found" });
     }
 
     // Cache single product for 5 minutes
@@ -182,6 +240,8 @@ const ALLOWED_FIELDS = [
   "images",
   "hasVariants",
   "options",
+  "isDraft",
+  "isActive",
 ];
 
 export const updateProduct = async (req, res) => {
@@ -238,6 +298,17 @@ export const updateProduct = async (req, res) => {
     } else {
       await Product.findByIdAndUpdate(req.params.id, updatePayload);
       if (hasVariantsNow) await syncProductSummary(req.params.id);
+    }
+
+    if (req.user.role !== "admin") {
+      const freshDoc = await Product.findById(req.params.id);
+      if (freshDoc) {
+        let changed = false;
+        if (freshDoc.isDraft) freshDoc.isActive = false;
+        if (freshDoc.moderationStatus === "rejected") { freshDoc.moderationStatus = "pending"; changed = true; }
+        if (updatePayload.isDraft === false && freshDoc.moderationStatus !== "approved") { freshDoc.moderationStatus = "pending"; changed = true; }
+        if (changed || freshDoc.isDraft) await freshDoc.save();
+      }
     }
 
     const updated = await Product.findById(req.params.id).populate("variants");
@@ -395,5 +466,45 @@ export const stockCheck = async (req, res) => {
     res.json({ stocks, variants });
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+};
+
+// Low-stock list for the signed-in seller (countInStock <= threshold).
+export const getSellerLowStock = async (req, res) => {
+  try {
+    const threshold = Math.min(100, Math.max(1, Number(req.query.threshold) || 5));
+    const products = await Product.find({
+      seller: req.user._id,
+      isActive: { $ne: false },
+      countInStock: { $lte: threshold },
+    })
+      .sort({ countInStock: 1 })
+      .populate("variants")
+      .lean();
+    return res.json({ threshold, products });
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to load low-stock products" });
+  }
+};
+
+// Related products: same category first, then same brand.
+export const getRelatedProducts = async (req, res) => {
+  try {
+    const product = await Product.findById(req.params.id).select("category brand").lean();
+    if (!product) return res.status(404).json({ message: "Product not found" });
+    const base = { _id: { $ne: req.params.id }, isActive: { $ne: false }, isDraft: { $ne: true }, $or: [{ moderationStatus: "approved" }, { moderationStatus: { $exists: false } }] };
+    const [sameCategory, sameBrand] = await Promise.all([
+      Product.find({ ...base, category: product.category }).limit(6).populate("seller", "name sellerVerified").populate("variants").lean(),
+      Product.find({ ...base, brand: product.brand, category: { $ne: product.category } }).limit(3).populate("seller", "name sellerVerified").populate("variants").lean(),
+    ]);
+    const seen = new Set();
+    const related = [...sameCategory, ...sameBrand].filter((p) => {
+      if (seen.has(String(p._id))) return false;
+      seen.add(String(p._id));
+      return true;
+    }).slice(0, 8);
+    return res.json(related);
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to load related products" });
   }
 };

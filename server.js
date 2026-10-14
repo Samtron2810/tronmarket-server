@@ -32,12 +32,20 @@ import paymentRoutes from "./routes/paymentRoutes.js";
 import uploadRoutes from "./routes/uploadRoutes.js";
 import adminRoutes from "./routes/adminRoutes.js";
 import sellerApplicationRoutes from "./routes/sellerApplicationRoutes.js";
+import categoryRoutes from "./routes/categoryRoutes.js";
+import wishlistRoutes from "./routes/wishlistRoutes.js";
+import payoutRoutes from "./routes/payoutRoutes.js";
+import couponRoutes from "./routes/couponRoutes.js";
 import { generalLimiter } from "./middlewares/rateLimiter.js";
 import { startOrderExpirySweeper } from "./services/orderExpiryService.js";
+import { startRecoveryEmailJob } from "./services/opsEmailService.js";
+import { startImageCleanupJob } from "./services/imageCleanupService.js";
 
 await connectDB();
 connectRedis().catch(() => {});
 startOrderExpirySweeper();
+startRecoveryEmailJob();
+startImageCleanupJob();
 
 const app = express();
 
@@ -72,6 +80,10 @@ app.use("/api/payments", paymentRoutes);
 app.use("/api/uploads", uploadRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/seller-applications", sellerApplicationRoutes);
+app.use("/api/categories", categoryRoutes);
+app.use("/api/wishlist", wishlistRoutes);
+app.use("/api/payouts", payoutRoutes);
+app.use("/api/coupons", couponRoutes);
 
 app.use(errorMiddleware);
 

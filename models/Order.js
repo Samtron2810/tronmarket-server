@@ -67,6 +67,8 @@ const sellerFulfillmentSchema = new mongoose.Schema(
       enum: ["not-eligible", "eligible", "paid", "cancelled"],
       default: "not-eligible",
     },
+    carrier: { type: String, trim: true, maxlength: 80, default: "" },
+    trackingNumber: { type: String, trim: true, maxlength: 120, default: "" },
     statusHistory: {
       type: [
         {
@@ -96,6 +98,9 @@ const orderSchema = new mongoose.Schema(
     // What the buyer pays: itemsSubtotal + shippingPrice. totalPrice is
     // kept as the payable grand total for compatibility with payments.
     itemsSubtotal: { type: Number, default: 0 },
+    couponCode: { type: String, default: "" },
+    discountAmount: { type: Number, default: 0 },
+    paymentReminderSentAt: { type: Date, default: null },
     shippingPrice: { type: Number, default: 0 },
     shippingZone: { type: String, default: "" },
     commissionRate: { type: Number, default: 0 },
@@ -195,6 +200,8 @@ const orderSchema = new mongoose.Schema(
 );
 
 orderSchema.index({ status: 1, paymentExpiresAt: 1 });
+orderSchema.index({ user: 1, createdAt: -1 });
+orderSchema.index({ status: 1, createdAt: -1 });
 orderSchema.index({ status: 1, deliveredAt: -1 });
 orderSchema.index({ "sellerFulfillments.seller": 1, createdAt: -1 });
 orderSchema.index({ user: 1, createdAt: -1 });

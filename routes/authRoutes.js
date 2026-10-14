@@ -12,6 +12,21 @@ import {
   refreshSession,
 } from "../controllers/authController.js";
 import {
+  updateProfile,
+  getMyProfile,
+  addAddress,
+  updateAddress,
+  deleteAddress,
+  requestEmailChange,
+  verifyEmailChange,
+  deleteMyAccount,
+  twoFactorSetup,
+  twoFactorVerify,
+  twoFactorDisable,
+  twoFactorLogin,
+  googleAuth,
+} from "../controllers/accountController.js";
+import {
   loginLimiter,
   registerLimiter,
   otpLimiter,
@@ -25,8 +40,18 @@ import {
   forgotPasswordSchema,
   resetPasswordSchema,
   changePasswordSchema,
+  updateProfileSchema,
+  savedAddressSchema,
+  emailChangeRequestSchema,
+  emailChangeVerifySchema,
+  twoFactorCodeSchema,
+  twoFactorDisableSchema,
+  twoFactorLoginSchema,
+  googleAuthSchema,
+  deleteAccountSchema,
 } from "../validations/authSchemas.js";
 import { protect } from "../middlewares/authMiddleware.js";
+import { validateObjectIdParams } from "../middlewares/validateObjectId.js";
 
 const router = express.Router();
 
@@ -37,6 +62,8 @@ router.post(
   registerUser,
 );
 router.post("/login", loginLimiter, validate(loginSchema), loginUser);
+router.post("/2fa/login", loginLimiter, validate(twoFactorLoginSchema), twoFactorLogin);
+router.post("/google", loginLimiter, validate(googleAuthSchema), googleAuth);
 router.post("/verify-otp", otpLimiter, validate(verifyOtpSchema), verifyOtp);
 router.post("/resend-otp", otpLimiter, validate(resendOtpSchema), resendOtp);
 router.post(
@@ -59,6 +86,45 @@ router.post(
   changePassword,
 );
 router.get("/me", protect, getMe);
+
+// Account management
+router.get("/profile", protect, getMyProfile);
+router.put("/profile", protect, validate(updateProfileSchema), updateProfile);
+router.post("/addresses", protect, validate(savedAddressSchema), addAddress);
+router.put(
+  "/addresses/:addressId",
+  protect,
+  validateObjectIdParams("addressId"),
+  validate(savedAddressSchema.partial()),
+  updateAddress,
+);
+router.delete(
+  "/addresses/:addressId",
+  protect,
+  validateObjectIdParams("addressId"),
+  deleteAddress,
+);
+router.post(
+  "/email-change/request",
+  protect,
+  otpLimiter,
+  validate(emailChangeRequestSchema),
+  requestEmailChange,
+);
+router.post(
+  "/email-change/verify",
+  protect,
+  otpLimiter,
+  validate(emailChangeVerifySchema),
+  verifyEmailChange,
+);
+router.delete("/me", protect, validate(deleteAccountSchema), deleteMyAccount);
+
+// Two-factor authentication
+router.post("/2fa/setup", protect, twoFactorSetup);
+router.post("/2fa/verify", protect, validate(twoFactorCodeSchema), twoFactorVerify);
+router.post("/2fa/disable", protect, validate(twoFactorDisableSchema), twoFactorDisable);
+
 // Refresh exchanges the httpOnly refresh cookie for a new access token.
 // Logout intentionally has no `protect`: it must work even when the
 // access token has already expired.

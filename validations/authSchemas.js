@@ -80,3 +80,46 @@ export const changePasswordSchema = z.object({
     .min(1, { error: "Current password is required" }),
   newPassword: newPasswordField,
 });
+
+export const updateProfileSchema = z.object({
+  name: z.string().trim().min(2, "Name must be at least 2 characters").max(80),
+});
+
+export const savedAddressSchema = z.object({
+  label: z.string().trim().max(40).optional(),
+  fullName: z.string().trim().min(2, "Full name is required"),
+  phone: z.string().trim().min(5, "Phone number is required"),
+  address: z.string().trim().min(5, "Address is required"),
+  city: z.string().trim().min(2, "City is required"),
+  state: z.string().trim().min(2, "State is required"),
+  isDefault: z.boolean().optional(),
+});
+
+export const emailChangeRequestSchema = z.object({
+  email: z.string().trim().toLowerCase().email("Enter a valid email address"),
+});
+
+export const emailChangeVerifySchema = z.object({
+  otp: z.string().trim().regex(/^\d{6}$/, "Enter the 6-digit code"),
+});
+
+export const twoFactorCodeSchema = z.object({
+  code: z.string().trim().regex(/^\d{6}$/, "Enter the 6-digit code"),
+});
+
+export const twoFactorDisableSchema = z.object({
+  password: z.string().min(1, "Password is required"),
+});
+
+export const twoFactorLoginSchema = z.object({
+  pendingToken: z.string().min(10),
+  code: z.string().trim().regex(/^\d{6}$/, "Enter the 6-digit code"),
+});
+
+export const googleAuthSchema = z.object({
+  idToken: z.string().min(10, "Missing Google credential"),
+});
+
+export const deleteAccountSchema = z.object({
+  password: z.string().min(1, "Password is required"),
+});

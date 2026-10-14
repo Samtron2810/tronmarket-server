@@ -25,6 +25,27 @@ import {
   updateOrderStatusSchema,
 } from "../validations/orderSchemas.js";
 import { checkoutLimiter } from "../middlewares/rateLimiter.js";
+import {
+  createReturnRequest,
+  myReturns,
+  orderReturnStatus,
+} from "../controllers/returnController.js";
+import { z } from "zod";
+
+const createReturnSchema = z.object({
+  reason: z.string().trim().min(3, "Tell us why you are returning this").max(300),
+  details: z.string().trim().max(2000).optional(),
+  items: z
+    .array(
+      z.object({
+        product: z.string().optional(),
+        variant: z.string().nullable().optional(),
+        name: z.string().optional(),
+        quantity: z.number().int().min(1).max(99).optional(),
+      }),
+    )
+    .optional(),
+});
 import { validateObjectIdParams } from "../middlewares/validateObjectId.js";
 
 const router = express.Router();
@@ -40,6 +61,9 @@ router.post(
 
 // GET /api/orders/my-orders — Protected
 router.get("/my-orders", protect, getMyOrders);
+
+// Returns — must precede /:id so "returns" is not parsed as an order id
+router.get("/returns/mine", protect, myReturns);
 
 // GET /api/orders/seller/orders — Seller/Admin
 router.get("/seller/orders", protect, sellerOrAdmin, getSellerOrders);
@@ -99,6 +123,26 @@ router.put(
   adminOnly,
   validateObjectIdParams("id"),
   completeOrderManually,
+);
+
+router.get(
+  "/:id/return",
+  protect,
+  validateObjectIdParams("id"),
+  (req, res, next) => {
+    req.params.orderId = req.params.id;
+    return orderReturnStatus(req, res, next);
+  },
+);
+router.post(
+  "/:id/return",
+  protect,
+  validateObjectIdParams("id"),
+  validate(createReturnSchema),
+  (req, res, next) => {
+    req.params.orderId = req.params.id;
+    return createReturnRequest(req, res, next);
+  },
 );
 
 export default router;
