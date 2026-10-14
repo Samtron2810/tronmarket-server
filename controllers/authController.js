@@ -1,12 +1,18 @@
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
-import jwt from "jsonwebtoken";
 import User from "../models/User.js";
-import { blacklistToken } from "../config/redis.js";
 import {
   sendOtpEmail,
   sendPasswordResetEmail,
 } from "../emails/emailService.js";
+import {
+  startSession,
+  rotateSession,
+  revokeSession,
+  revokeAllSessions,
+  blacklistAccessToken,
+  ACCESS_TOKEN_TTL,
+} from "../services/authTokenService.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -29,12 +35,19 @@ async function hashOtp(otp) {
   return bcrypt.hash(otp, 10);
 }
 
-function issueToken(user) {
-  return jwt.sign(
-    { id: user._id, tv: user.tokenVersion || 0 },
-    process.env.JWT_SECRET,
-    { expiresIn: "7d" },
-  );
+// Starts an access+refresh session (refresh token goes out as an httpOnly
+// cookie) and returns the response body the SPA stores: a short-lived
+// access token plus the public user. `token` is kept as an alias of
+// `accessToken` for older clients.
+async function sessionResponse(req, res, user, status = 200) {
+  const accessToken = await startSession(req, res, user);
+  return res.status(status).json({
+    ...publicUser(user),
+    token: accessToken,
+    accessToken,
+    tokenType: "Bearer",
+    accessTokenExpiresIn: ACCESS_TOKEN_TTL,
+  });
 }
 
 function publicUser(user) {
@@ -184,7 +197,7 @@ export const verifyOtp = async (req, res) => {
     clearRegistrationOtp(user);
     await user.save();
 
-    res.json({ ...publicUser(user), token: issueToken(user) });
+    return sessionResponse(req, res, user);
   } catch (error) {
     console.error("verifyOtp:", error);
     res.status(500).json({ message: "Verification failed. Please try again." });
@@ -285,10 +298,17 @@ export const resetPassword = async (req, res) => {
     clearResetOtp(user);
     user.tokenVersion = (user.tokenVersion || 0) + 1;
     await user.save();
+    // Every pre-reset session dies (tokenVersion bump + refresh revoke);
+    // only the fresh session started here survives.
+    await revokeAllSessions(user._id);
 
-    res.json({
+    const accessToken = await startSession(req, res, user);
+    return res.json({
       ...publicUser(user),
-      token: issueToken(user),
+      token: accessToken,
+      accessToken,
+      tokenType: "Bearer",
+      accessTokenExpiresIn: ACCESS_TOKEN_TTL,
       message: "Password reset successfully.",
     });
   } catch (error) {
@@ -328,11 +348,16 @@ export const changePassword = async (req, res) => {
     clearResetOtp(user);
     user.tokenVersion = (user.tokenVersion || 0) + 1;
     await user.save();
+    // Fresh session for THIS device; every other session is signed out.
+    await revokeAllSessions(user._id);
 
-    res.json({
+    const accessToken = await startSession(req, res, user);
+    return res.json({
       ...publicUser(user),
-      // Fresh token for THIS session; every other session is signed out.
-      token: issueToken(user),
+      token: accessToken,
+      accessToken,
+      tokenType: "Bearer",
+      accessTokenExpiresIn: ACCESS_TOKEN_TTL,
       message: "Password changed successfully.",
     });
   } catch (error) {
@@ -379,10 +404,39 @@ export const loginUser = async (req, res) => {
       });
     }
 
-    res.json({ ...publicUser(user), token: issueToken(user) });
+    return sessionResponse(req, res, user);
   } catch (error) {
     console.error("loginUser:", error);
     res.status(500).json({ message: "Login failed. Please try again." });
+  }
+};
+
+// ── Refresh ───────────────────────────────────────────────────────────────────
+// Exchanges the httpOnly refresh cookie for a fresh access token (the
+// refresh token itself rotates). The SPA calls this automatically when an
+// access token expires. The custom header requirement blocks cross-site
+// form posts from ever triggering a rotation (CSRF defence-in-depth on top
+// of SameSite cookies).
+
+export const refreshSession = async (req, res) => {
+  try {
+    if (req.headers["x-refresh-request"] !== "1") {
+      return res
+        .status(400)
+        .json({ message: "Refresh requests must come from the app." });
+    }
+    const { user, accessToken } = await rotateSession(req, res);
+    return res.json({
+      ...publicUser(user),
+      token: accessToken,
+      accessToken,
+      tokenType: "Bearer",
+      accessTokenExpiresIn: ACCESS_TOKEN_TTL,
+    });
+  } catch (error) {
+    return res
+      .status(error.statusCode || 401)
+      .json({ message: error.message || "Session expired. Please log in again." });
   }
 };
 
@@ -390,11 +444,15 @@ export const loginUser = async (req, res) => {
 
 export const logoutUser = async (req, res) => {
   try {
+    // Blacklist the presented access token for its remaining (short) life
+    // and revoke the refresh session so the cookie can't mint new ones.
+    // Deliberately succeeds even with an expired/absent access token —
+    // signing out must always work.
     const authHeader = req.headers.authorization;
     if (authHeader && authHeader.startsWith("Bearer ")) {
-      const token = authHeader.split(" ")[1];
-      await blacklistToken(token, 7 * 24 * 60 * 60);
+      await blacklistAccessToken(authHeader.split(" ")[1]);
     }
+    await revokeSession(req, res);
     res.json({ message: "Logged out successfully" });
   } catch (error) {
     console.error("logoutUser:", error);

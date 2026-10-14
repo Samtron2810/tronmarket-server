@@ -9,6 +9,7 @@ import {
   resetPassword,
   changePassword,
   getMe,
+  refreshSession,
 } from "../controllers/authController.js";
 import {
   loginLimiter,
@@ -58,6 +59,10 @@ router.post(
   changePassword,
 );
 router.get("/me", protect, getMe);
-router.post("/logout", protect, logoutUser);
+// Refresh exchanges the httpOnly refresh cookie for a new access token.
+// Logout intentionally has no `protect`: it must work even when the
+// access token has already expired.
+router.post("/refresh", refreshSession);
+router.post("/logout", logoutUser);
 
 export default router;

@@ -34,6 +34,16 @@ export const protect = async (req, res, next) => {
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
+    // Only short-lived access tokens authenticate API calls. (Refresh
+    // tokens are opaque cookies, never Bearer tokens; pre-refresh-token
+    // 7-day JWTs have no `typ` and are rejected too — one re-login is
+    // required after this upgrade.)
+    if (decoded.typ !== "access") {
+      return res
+        .status(401)
+        .json({ message: "Invalid session token. Please log in again." });
+    }
+
     req.user = await User.findById(decoded.id).select("-password");
 
     if (!req.user) {
