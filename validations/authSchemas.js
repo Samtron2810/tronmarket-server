@@ -95,14 +95,6 @@ export const savedAddressSchema = z.object({
   isDefault: z.boolean().optional(),
 });
 
-export const emailChangeRequestSchema = z.object({
-  email: z.string().trim().toLowerCase().email("Enter a valid email address"),
-});
-
-export const emailChangeVerifySchema = z.object({
-  otp: z.string().trim().regex(/^\d{6}$/, "Enter the 6-digit code"),
-});
-
 export const twoFactorCodeSchema = z.object({
   code: z.string().trim().regex(/^\d{6}$/, "Enter the 6-digit code"),
 });

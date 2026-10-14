@@ -17,8 +17,6 @@ import {
   addAddress,
   updateAddress,
   deleteAddress,
-  requestEmailChange,
-  verifyEmailChange,
   deleteMyAccount,
   twoFactorSetup,
   twoFactorVerify,
@@ -43,8 +41,6 @@ import {
   changePasswordSchema,
   updateProfileSchema,
   savedAddressSchema,
-  emailChangeRequestSchema,
-  emailChangeVerifySchema,
   twoFactorCodeSchema,
   twoFactorDisableSchema,
   twoFactorLoginSchema,
@@ -112,20 +108,6 @@ router.delete(
   protect,
   validateObjectIdParams("addressId"),
   deleteAddress,
-);
-router.post(
-  "/email-change/request",
-  protect,
-  otpLimiter,
-  validate(emailChangeRequestSchema),
-  requestEmailChange,
-);
-router.post(
-  "/email-change/verify",
-  protect,
-  otpLimiter,
-  validate(emailChangeVerifySchema),
-  verifyEmailChange,
 );
 router.delete("/me", protect, validate(deleteAccountSchema), deleteMyAccount);
 

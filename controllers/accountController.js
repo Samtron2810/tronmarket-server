@@ -18,8 +18,6 @@ import {
 } from "../services/totpService.js";
 import { invalidateProductCache, cacheDel } from "../config/redis.js";
 
-const EMAIL_CHANGE_TTL_MS = 10 * 60 * 1000;
-
 function publicUser(user) {
   return {
     _id: user._id,
@@ -123,65 +121,6 @@ export const deleteAddress = async (req, res) => {
     return res.json({ savedAddresses: user.savedAddresses });
   } catch (error) {
     return res.status(500).json({ message: "Could not delete address" });
-  }
-};
-
-// ── Email change with re-verification ─────────────────────────────────────────
-export const requestEmailChange = async (req, res) => {
-  try {
-    const email = String(req.body?.email || "").trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      return res.status(400).json({ message: "Enter a valid email address" });
-    }
-    if (email === req.user.email) {
-      return res.status(400).json({ message: "That is already your email address" });
-    }
-    const taken = await User.findOne({ email, accountStatus: { $ne: "deleted" } });
-    if (taken) return res.status(409).json({ message: "That email is already in use" });
-
-    const user = await User.findById(req.user._id);
-    const otp = String(crypto.randomInt(100000, 1000000));
-    user.pendingEmail = email;
-    user.emailChangeOtp = await bcrypt.hash(otp, 10);
-    user.emailChangeOtpExpiresAt = new Date(Date.now() + EMAIL_CHANGE_TTL_MS);
-    user.emailChangeOtpAttempts = 0;
-    await user.save();
-    sendOtpEmail(email, user.name, otp);
-    return res.json({ message: "We sent a 6-digit code to your new email address.", pendingEmail: email });
-  } catch (error) {
-    return res.status(500).json({ message: "Could not start the email change" });
-  }
-};
-
-export const verifyEmailChange = async (req, res) => {
-  try {
-    const user = await User.findById(req.user._id);
-    if (!user?.pendingEmail || !user.emailChangeOtp || !user.emailChangeOtpExpiresAt || new Date() > user.emailChangeOtpExpiresAt) {
-      return res.status(400).json({ message: "Invalid or expired code." });
-    }
-    if ((user.emailChangeOtpAttempts || 0) >= 5) {
-      user.pendingEmail = null; user.emailChangeOtp = null; user.emailChangeOtpExpiresAt = null;
-      await user.save();
-      return res.status(429).json({ message: "Too many incorrect attempts. Please request a new code." });
-    }
-    const match = await bcrypt.compare(String(req.body?.otp || ""), user.emailChangeOtp);
-    if (!match) {
-      user.emailChangeOtpAttempts = (user.emailChangeOtpAttempts || 0) + 1;
-      await user.save();
-      return res.status(400).json({ message: "Invalid or expired code." });
-    }
-
-    user.email = user.pendingEmail;
-    user.pendingEmail = null;
-    user.emailChangeOtp = null;
-    user.emailChangeOtpExpiresAt = null;
-    user.emailChangeOtpAttempts = 0;
-    user.tokenVersion = (user.tokenVersion || 0) + 1;
-    await user.save();
-    await revokeAllSessions(user._id);
-    return res.json({ ...(await sessionBody(req, res, user)), message: "Email updated." });
-  } catch (error) {
-    return res.status(500).json({ message: "Could not complete the email change" });
   }
 };
 
@@ -333,7 +272,7 @@ export const googleAuth = async (req, res) => {
 // own (change-password and delete both check the password server-side).
 export const verifyCurrentPassword = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select("password");
+    const user = await User.findById(req.user._id);
     if (!user) return res.status(404).json({ message: "User not found" });
     const ok = user.password
       ? await bcrypt.compare(String(req.body?.password || ""), user.password)

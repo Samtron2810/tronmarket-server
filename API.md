@@ -16,8 +16,8 @@ renewed via the httpOnly refresh cookie (`POST /api/auth/refresh`).
 | POST | `/auth/logout` | any | Revokes the refresh session + blacklists the access token |
 | GET | `/auth/me` | user | Current session user |
 | GET/PUT | `/auth/profile` | user | Profile incl. saved addresses & wishlist ids |
+| POST | `/auth/verify-password` | user | Step-up check that unlocks the profile Security tab |
 | POST/PUT/DELETE | `/auth/addresses[/:addressId]` | user | Saved address book |
-| POST | `/auth/email-change/request` · `/verify` | user | OTP to the new address; applying it rotates all sessions |
 | DELETE | `/auth/me` | user | Self-deletion (password required, soft delete) |
 | POST | `/auth/2fa/setup` · `/verify` · `/disable` | user | TOTP (authenticator app) management |
 
