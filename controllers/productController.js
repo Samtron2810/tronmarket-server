@@ -242,6 +242,7 @@ const ALLOWED_FIELDS = [
   "options",
   "isDraft",
   "isActive",
+  "discountPercent",
 ];
 
 export const updateProduct = async (req, res) => {

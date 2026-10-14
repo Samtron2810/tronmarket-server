@@ -176,9 +176,14 @@ export async function resolvePurchasable(product, variantId) {
 }
 
 // Unit price/stock for a product or one of its variants (server-side truth —
-// never trust prices sent by the client).
+// never trust prices sent by the client). The product's discountPercent (a
+// seller/admin sale) is applied here so every money path — cart quotes,
+// order lines, coupon subtotals — charges the sale price consistently.
 export function purchasablePrice(product, variant) {
-  return variant ? variant.price : product.price;
+  const base = Number(variant ? variant.price : product?.price) || 0;
+  const percent = Math.min(90, Math.max(0, Number(product?.discountPercent) || 0));
+  if (!percent) return base;
+  return Math.round(base * (100 - percent)) / 100;
 }
 
 export function purchasableStock(product, variant) {

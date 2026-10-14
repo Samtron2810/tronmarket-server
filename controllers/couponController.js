@@ -1,5 +1,6 @@
 import Cart from "../models/Cart.js";
 import { evaluateCoupon } from "../services/couponService.js";
+import { purchasablePrice } from "../services/variantService.js";
 
 // Buyer-facing coupon preview: evaluates against the caller's cart subtotal
 // (or an explicit subtotal) without redeeming anything.
@@ -11,10 +12,10 @@ export const validateCoupon = async (req, res) => {
         .populate("items.product")
         .populate("items.variant")
         .lean();
-      subtotal = (cart?.items || []).reduce((sum, item) => {
-        const price = item.variant?.price ?? item.product?.price ?? 0;
-        return sum + Number(price || 0) * Number(item.quantity || 0);
-      }, 0);
+      subtotal = (cart?.items || []).reduce(
+        (sum, item) => sum + purchasablePrice(item.product, item.variant) * Number(item.quantity || 0),
+        0,
+      );
     }
     const { coupon, discount } = await evaluateCoupon(req.body.code, subtotal);
     return res.json({

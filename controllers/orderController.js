@@ -5,6 +5,7 @@ import ProductVariant from "../models/ProductVariant.js";
 import {
   variantLabel as buildVariantLabel,
   syncProductSummary,
+  purchasablePrice,
 } from "../services/variantService.js";
 import { invalidateProductCache, cacheDel } from "../config/redis.js";
 import { cancelOrderWithRefund } from "../services/orderCancellationService.js";
@@ -145,7 +146,7 @@ export const createOrder = async (req, res) => {
         name: product.name,
         image: variant?.image || product.image,
         seller: product.seller,
-        price: variant ? variant.price : product.price,
+        price: purchasablePrice(product, variant),
         quantity: item.quantity,
       });
     }
@@ -368,7 +369,7 @@ export const getShippingQuote = async (req, res) => {
     }
 
     const itemsSubtotal = cart.items.reduce((sum, item) => {
-      const price = Number(item.variant?.price ?? item.product?.price ?? 0);
+      const price = purchasablePrice(item.product, item.variant);
       return sum + price * Number(item.quantity || 0);
     }, 0);
     const shipping = shippingForSubtotal(itemsSubtotal, state);

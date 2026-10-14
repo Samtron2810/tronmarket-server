@@ -87,6 +87,10 @@ const productSchema = new mongoose.Schema(
     // existing/legacy products count as approved, new seller listings wait
     // for an admin once moderation is in use (see moderationStatus default).
     isDraft: { type: Boolean, default: false },
+    // Seller/admin-set sale discount (percent off the list price). Applies
+    // to the product price and every variant price; purchasablePrice() is
+    // the single place that turns list prices into charged prices.
+    discountPercent: { type: Number, default: 0, min: 0, max: 90 },
     moderationStatus: {
       type: String,
       enum: ["pending", "approved", "rejected"],
