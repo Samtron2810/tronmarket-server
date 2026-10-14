@@ -325,3 +325,22 @@ export const googleAuth = async (req, res) => {
     return res.status(500).json({ message: "Google sign-in failed. Please try again." });
   }
 };
+
+// Step-up check used by the profile Security tab: sensitive forms (change
+// password/email, 2FA, delete) stay locked until the signed-in user proves
+// they still know the current password. Returns no token — it only unlocks
+// UI state client-side; every sensitive endpoint still re-verifies on its
+// own (change-password and delete both check the password server-side).
+export const verifyCurrentPassword = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select("password");
+    if (!user) return res.status(404).json({ message: "User not found" });
+    const ok = user.password
+      ? await bcrypt.compare(String(req.body?.password || ""), user.password)
+      : false;
+    if (!ok) return res.status(400).json({ message: "Password is incorrect" });
+    return res.json({ success: true });
+  } catch (error) {
+    return res.status(500).json({ message: "Could not verify your password" });
+  }
+};

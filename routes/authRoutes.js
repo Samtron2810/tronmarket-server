@@ -25,6 +25,7 @@ import {
   twoFactorDisable,
   twoFactorLogin,
   googleAuth,
+  verifyCurrentPassword,
 } from "../controllers/accountController.js";
 import {
   loginLimiter,
@@ -52,6 +53,7 @@ import {
 } from "../validations/authSchemas.js";
 import { protect } from "../middlewares/authMiddleware.js";
 import { validateObjectIdParams } from "../middlewares/validateObjectId.js";
+import { z } from "zod";
 
 const router = express.Router();
 
@@ -88,6 +90,13 @@ router.post(
 router.get("/me", protect, getMe);
 
 // Account management
+router.post(
+  "/verify-password",
+  protect,
+  loginLimiter,
+  validate(z.object({ password: z.string().min(1) }).strict()),
+  verifyCurrentPassword,
+);
 router.get("/profile", protect, getMyProfile);
 router.put("/profile", protect, validate(updateProfileSchema), updateProfile);
 router.post("/addresses", protect, validate(savedAddressSchema), addAddress);
