@@ -9,6 +9,7 @@ import {
   stockCheck,
   getSellerLowStock,
   getRelatedProducts,
+  getStorefrontMeta,
 } from "../controllers/productController.js";
 import {
   listProductReviews,
@@ -32,6 +33,9 @@ const reviewSchema = z.object({
 });
 
 const router = express.Router();
+
+// Storefront metadata (brands + free-shipping threshold) — before /:id
+router.get("/meta", getStorefrontMeta);
 
 // GET /api/products — Public, cached via Redis
 router.get("/", getProducts);

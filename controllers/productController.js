@@ -77,9 +77,43 @@ export const createProduct = async (req, res) => {
   }
 };
 
+/**
+ * GET /api/products/meta — public storefront metadata:
+ * distinct brands (for filters) + the free-shipping threshold (for the
+ * cart progress bar). Mirrors the storefront visibility rules.
+ */
+export const getStorefrontMeta = async (req, res) => {
+  try {
+    const visibility = {
+      isActive: { $ne: false },
+      isDraft: { $ne: true },
+      $or: [
+        { moderationStatus: "approved" },
+        { moderationStatus: { $exists: false } },
+      ],
+    };
+    const brands = await Product.distinct("brand", {
+      ...visibility,
+      brand: { $exists: true, $nin: [null, ""] },
+    });
+    const categories = await Product.distinct("category", {
+      ...visibility,
+      category: { $exists: true, $nin: [null, ""] },
+    });
+    const { getFreeShippingThreshold } = await import("../services/pricingService.js");
+    return res.json({
+      brands: brands.filter(Boolean).sort((a, b) => String(a).localeCompare(String(b))),
+      categories: categories.filter(Boolean).sort((a, b) => String(a).localeCompare(String(b))),
+      freeShippingThreshold: getFreeShippingThreshold(),
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
 export const getProducts = async (req, res) => {
   try {
-    const { search, category, brand, featured, sort, min, max, page = 1, limit = 6 } = req.query;
+    const { search, category, brand, featured, seller, sort, min, max, page = 1, limit = 6 } = req.query;
 
     // Try to get from cache first
     // Cache key is based on all filter parameters so different searches
@@ -119,9 +153,16 @@ export const getProducts = async (req, res) => {
       }
     }
 
-    // CATEGORY
+    // CATEGORY — exact match, but tolerant of the capitalisation used by
+    // managed categories vs. older product records.
     if (category && typeof category === "string") {
-      filter.category = category.slice(0, 100);
+      const cleanCategory = category.trim().slice(0, 100);
+      if (cleanCategory) {
+        filter.category = {
+          $regex: `^${escapeStringRegexp(cleanCategory)}$`,
+          $options: "i",
+        };
+      }
     }
 
     if (brand && typeof brand === "string") {
@@ -130,6 +171,11 @@ export const getProducts = async (req, res) => {
 
     if (featured === "1" || featured === "true") {
       filter.isFeatured = true;
+    }
+
+    // SELLER — "more from this seller" on the product page
+    if (seller && typeof seller === "string" && /^[a-fA-F0-9]{24}$/.test(seller)) {
+      filter.seller = seller;
     }
 
     // PRICE RANGE
