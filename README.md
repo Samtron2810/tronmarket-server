@@ -6,7 +6,7 @@ Backend API for the TronMarket e-commerce platform. Built with **Node.js**, **Ex
 
 ## Features
 
-- **User Authentication & Authorization** — Register, login, logout with JWT-based access & refresh tokens. Token blacklisting on logout (via Redis).
+- **User Authentication & Authorization** — Register, login, logout with short-lived JWT access tokens (15 min) plus rotating refresh tokens delivered as httpOnly cookies (30 days, reuse-detecting). Logout blacklists the access token (via Redis) and revokes the refresh session.
 - **Product Management** — Create, read, update, delete products. Supports search, category filtering, price range filtering, and pagination.
 - **Shopping Cart** — Add to cart, update quantities, remove items, persist cart per user.
 - **Order Processing** — Place orders, view order history, track order status (pending → confirmed → shipped → delivered → cancelled).
@@ -89,6 +89,14 @@ Copy the example file (if provided) or create a `.env` file in the `server/` roo
 MONGO_URI=your_mongodb_connection_string
 JWT_SECRET=your_jwt_secret
 
+# Sessions (optional — defaults shown)
+# Access tokens are short-lived JWTs; refresh tokens are rotating
+# httpOnly cookies (see services/authTokenService.js).
+JWT_ACCESS_TTL=15m
+JWT_REFRESH_TTL_DAYS=30
+# COOKIE_SAMESITE=lax        # use "none" (+ HTTPS) for cross-site deploys
+# COOKIE_DOMAIN=example.com  # only if the API spans subdomains
+
 # Paystack (required for payments)
 PAYSTACK_SECRET_KEY=your_paystack_secret_key
 PAYSTACK_PUBLIC_KEY=your publick key
@@ -103,6 +111,16 @@ REDIS_URL=your connection link from redis-cloud || redis://localhost:6379
 
 # Client URL (for CORS)
 CLIENT_URL=http://localhost:5173
+
+# Marketplace pricing (optional)
+PLATFORM_COMMISSION_RATE=0.10
+SHIPPING_FREE_THRESHOLD=100000
+SHIPPING_Lagos_FEE=1500
+SHIPPING_SOUTH_WEST_FEE=2500
+SHIPPING_SOUTH_SOUTH_FEE=3500
+SHIPPING_SOUTH_EAST_FEE=3500
+SHIPPING_NORTH_FEE=4500
+SHIPPING_DEFAULT_FEE=4500
 ```
 
 ### 4. Start the server

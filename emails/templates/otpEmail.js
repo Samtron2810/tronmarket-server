@@ -16,7 +16,7 @@ export function otpEmailHtml(name, otp) {
           <tr>
             <td style="background:#FF8C00;padding:32px 40px 24px;text-align:center;">
               <span style="font-size:28px;font-weight:900;letter-spacing:-0.5px;">
-                <span style="color:#1A1A1A;">TRON</span><span style="color:#ffffff;">MARKET</span>
+                <span style="color:#1A1A1A;">Tron</span><span style="color:#ffffff;">Market</span>
               </span>
             </td>
           </tr>

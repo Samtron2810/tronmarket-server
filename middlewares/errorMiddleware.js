@@ -1,6 +1,15 @@
 // FIX #7: Never leak raw error.message in production.
 // Log internally, return a safe generic message.
 const errorMiddleware = (err, req, res, next) => {
+  // A malformed Mongo ObjectId is a missing resource from the client's
+  // point of view, not a server fault.
+  if (err?.name === "CastError" && err?.kind === "ObjectId") {
+    return res.status(404).json({
+      success: false,
+      message: "Resource not found",
+    });
+  }
+
   const statusCode = err.statusCode || 500;
 
   // Always log the real error server-side for debugging

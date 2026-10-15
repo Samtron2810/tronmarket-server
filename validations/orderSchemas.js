@@ -25,6 +25,7 @@ export const shippingAddressSchema = z.object({
 
 export const createOrderSchema = z.object({
   shippingAddress: shippingAddressSchema,
+  couponCode: z.string().trim().max(40).optional(),
 });
 
 export const updateOrderStatusSchema = z.object({
@@ -42,4 +43,6 @@ export const updateOrderStatusSchema = z.object({
     { error: "Invalid order status" },
   ),
   note: z.string().trim().optional(),
+  carrier: z.string().trim().max(80).optional(),
+  trackingNumber: z.string().trim().max(120).optional(),
 });

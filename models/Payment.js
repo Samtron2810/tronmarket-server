@@ -37,8 +37,25 @@ const paymentSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["pending", "success", "failed"],
+      enum: [
+        "pending",
+        "success",
+        "failed",
+        // A real charge that cannot be applied to its order (wrong amount,
+        // late payment for a cancelled order, second payment, ...). The
+        // money exists at Paystack but must never mark an order paid.
+        "requires_refund",
+        "refund_pending",
+        "refunded",
+        "refund_failed",
+      ],
       default: "pending",
+    },
+
+    // Paystack refund identifier once a refund has been requested.
+    refundReference: {
+      type: String,
+      default: "",
     },
 
     paidAt: Date,

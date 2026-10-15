@@ -1,5 +1,6 @@
+import crypto from "crypto";
 import express from "express";
-import upload from "../middlewares/uploadMiddleware.js";
+import { uploadProductImages } from "../middlewares/uploadMiddleware.js";
 import cloudinary from "../config/cloudinary.js";
 import { protect, sellerOnly } from "../middlewares/authMiddleware.js";
 import { uploadLimiter } from "../middlewares/rateLimiter.js"; // FIX #6
@@ -24,11 +25,14 @@ const uploadBuffer = (buffer, fileName) => {
           { width: 600, fetch_format: "auto", quality: "auto" },
         ],
         eager_async: false,
-        public_id: fileName
-          ? `product-${Date.now()}-${fileName.replace(/[^a-zA-Z0-9_-]/g, "")}`
-          : undefined,
+        public_id: `product-${Date.now()}-${crypto.randomUUID()}-${String(
+          fileName || "image",
+        )
+          .replace(/\.[^.]+$/, "")
+          .replace(/[^a-zA-Z0-9_-]/g, "-")
+          .slice(0, 40)}`,
         allowed_formats: ["jpg", "jpeg", "png", "gif", "webp"],
-        max_file_size: 20 * 1024 * 1024,
+        max_file_size: 5 * 1024 * 1024,
       },
       (error, result) => {
         if (error) return reject(error);
@@ -45,7 +49,7 @@ router.post(
   protect,
   sellerOnly,
   uploadLimiter,
-  upload.array("images"),
+  uploadProductImages,
   async (req, res) => {
     try {
       if (!req.files || req.files.length === 0) {

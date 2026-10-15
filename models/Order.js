@@ -11,10 +11,74 @@ const orderItemSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
     },
+    // Chosen variant (reference kept for restocking on cancel; the label,
+    // SKU and price snapshots below are the historical record and survive
+    // later variant edits/deactivation).
+    variant: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "ProductVariant",
+    },
+    variantLabel: String,
+    sku: String,
     name: String,
     image: String,
     price: Number,
     quantity: Number,
+  },
+  { _id: false },
+);
+
+// One fulfilment record per seller in the order. The buyer still places
+// (and pays for) a single order, but each seller only ever sees and acts on
+// their own items, subtotal and fulfilment status; the order-level status
+// is derived from these (see services/orderFulfillmentService.js).
+const sellerFulfillmentSchema = new mongoose.Schema(
+  {
+    seller: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+    status: {
+      type: String,
+      enum: [
+        "pending",
+        "paid",
+        "processing",
+        "shipped",
+        "delivery-claimed",
+        "delivered",
+        "completed",
+        "cancelled",
+      ],
+      default: "pending",
+    },
+    // This seller's share of the items subtotal (their items only).
+    subtotal: {
+      type: Number,
+      default: 0,
+    },
+    // Money split snapshot (see services/pricingService.js): the platform
+    // keeps commissionAmount; payoutAmount is what the seller is owed.
+    commissionRate: { type: Number, default: 0 },
+    commissionAmount: { type: Number, default: 0 },
+    payoutAmount: { type: Number, default: 0 },
+    payoutStatus: {
+      type: String,
+      enum: ["not-eligible", "eligible", "paid", "cancelled"],
+      default: "not-eligible",
+    },
+    carrier: { type: String, trim: true, maxlength: 80, default: "" },
+    trackingNumber: { type: String, trim: true, maxlength: 120, default: "" },
+    statusHistory: {
+      type: [
+        {
+          status: { type: String },
+          note: { type: String },
+          changedAt: { type: Date, default: Date.now },
+        },
+      ],
+      default: [],
+    },
   },
   { _id: false },
 );
@@ -28,6 +92,20 @@ const orderSchema = new mongoose.Schema(
     },
 
     orderItems: [orderItemSchema],
+
+    sellerFulfillments: [sellerFulfillmentSchema],
+
+    // What the buyer pays: itemsSubtotal + shippingPrice. totalPrice is
+    // kept as the payable grand total for compatibility with payments.
+    itemsSubtotal: { type: Number, default: 0 },
+    couponCode: { type: String, default: "" },
+    discountAmount: { type: Number, default: 0 },
+    paymentReminderSentAt: { type: Date, default: null },
+    shippingPrice: { type: Number, default: 0 },
+    shippingZone: { type: String, default: "" },
+    commissionRate: { type: Number, default: 0 },
+    commissionTotal: { type: Number, default: 0 },
+    sellerPayoutTotal: { type: Number, default: 0 },
 
     totalPrice: {
       type: Number,
@@ -59,6 +137,37 @@ const orderSchema = new mongoose.Schema(
 
     paidAt: Date,
 
+    // Unpaid orders only hold their reserved stock until this moment; the
+    // expiry sweeper (services/orderExpiryService.js) then cancels the
+    // order and returns the stock.
+    paymentExpiresAt: Date,
+
+    expiredAt: Date,
+
+    deliveredAt: Date,
+
+    // Refund lifecycle for a paid order (e.g. customer cancels after
+    // paying). "none" until a refund is requested; a paid order must not
+    // be treated as fully cancelled until this leaves "pending".
+    refundStatus: {
+      type: String,
+      enum: ["none", "pending", "processed", "failed"],
+      default: "none",
+    },
+
+    refundReference: {
+      type: String,
+      default: "",
+    },
+
+    // Amount refunded (or requested) back to the customer, in Naira.
+    refundAmount: {
+      type: Number,
+      default: 0,
+    },
+
+    refundedAt: Date,
+
     status: {
       type: String,
       enum: [
@@ -89,5 +198,12 @@ const orderSchema = new mongoose.Schema(
     timestamps: true,
   },
 );
+
+orderSchema.index({ status: 1, paymentExpiresAt: 1 });
+orderSchema.index({ user: 1, createdAt: -1 });
+orderSchema.index({ status: 1, createdAt: -1 });
+orderSchema.index({ status: 1, deliveredAt: -1 });
+orderSchema.index({ "sellerFulfillments.seller": 1, createdAt: -1 });
+orderSchema.index({ user: 1, createdAt: -1 });
 
 export default mongoose.model("Order", orderSchema);
