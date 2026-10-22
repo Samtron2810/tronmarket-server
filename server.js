@@ -1,5 +1,4 @@
-import dotenv from "dotenv";
-dotenv.config();
+import "./config/env.js"; // must stay the first import (see config/env.js)
 
 const REQUIRED_ENV = ["MONGO_URI", "JWT_SECRET", "PAYSTACK_SECRET_KEY"];
 for (const key of REQUIRED_ENV) {
@@ -35,10 +34,14 @@ import sellerApplicationRoutes from "./routes/sellerApplicationRoutes.js";
 import categoryRoutes from "./routes/categoryRoutes.js";
 import wishlistRoutes from "./routes/wishlistRoutes.js";
 import payoutRoutes from "./routes/payoutRoutes.js";
+import disputeRoutes from "./routes/disputeRoutes.js";
 import couponRoutes from "./routes/couponRoutes.js";
 import deliveryStateRoutes from "./routes/deliveryStateRoutes.js";
+import messageRoutes from "./routes/messageRoutes.js";
+import { startPaymentReconciliationSweeper } from "./services/paymentReconciliationService.js";
 import { generalLimiter } from "./middlewares/rateLimiter.js";
 import { startOrderExpirySweeper } from "./services/orderExpiryService.js";
+import { startOrderLifecycleSweeper } from "./services/orderLifecycleService.js";
 import { startRecoveryEmailJob } from "./services/opsEmailService.js";
 import { startImageCleanupJob } from "./services/imageCleanupService.js";
 import { startProductRankingJob } from "./services/productRankingService.js";
@@ -46,6 +49,8 @@ import { startProductRankingJob } from "./services/productRankingService.js";
 await connectDB();
 connectRedis().catch(() => {});
 startOrderExpirySweeper();
+startOrderLifecycleSweeper();
+startPaymentReconciliationSweeper();
 startRecoveryEmailJob();
 startImageCleanupJob();
 startProductRankingJob();
@@ -86,8 +91,10 @@ app.use("/api/seller-applications", sellerApplicationRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/wishlist", wishlistRoutes);
 app.use("/api/payouts", payoutRoutes);
+app.use("/api/disputes", disputeRoutes);
 app.use("/api/coupons", couponRoutes);
 app.use("/api/delivery-states", deliveryStateRoutes);
+app.use("/api/messages", messageRoutes);
 
 app.use(errorMiddleware);
 

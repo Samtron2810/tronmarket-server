@@ -96,6 +96,12 @@ export function effectiveFulfillmentStatus(order, fulfillment) {
 
 // Make sure every seller in the order has a fulfilment record with an
 // up-to-date subtotal. Mutates the (Mongoose) order document; callers save.
+// What is still the seller's goods value after refunds.
+export function netSubtotal(fulfillment, grossSubtotal) {
+  const gross = Number(grossSubtotal ?? fulfillment?.subtotal ?? 0);
+  return money(Math.max(0, gross - Number(fulfillment?.refundedSubtotal || 0)));
+}
+
 export function ensureSellerFulfillments(order) {
   if (!order) return [];
   const groups = groupOrderItemsBySeller(order.orderItems || []);
@@ -126,13 +132,25 @@ export function ensureSellerFulfillments(order) {
       fulfillment = order.sellerFulfillments[order.sellerFulfillments.length - 1];
     }
     fulfillment.subtotal = money(group.subtotal);
+    // Commission and payout are computed on what is still the seller's after
+    // refunds (refundedSubtotal), so a refunded share is never paid out.
     const rate =
       fulfillment.commissionRate ?? order.commissionRate ?? getCommissionRate();
-    const split = commissionFor(group.subtotal, rate);
+    const net = netSubtotal(fulfillment, group.subtotal);
+    const split =
+      net > 0
+        ? commissionFor(net, rate)
+        : { commissionRate: rate, commissionAmount: 0, payoutAmount: 0 };
     fulfillment.commissionRate = split.commissionRate;
     fulfillment.commissionAmount = split.commissionAmount;
     fulfillment.payoutAmount = split.payoutAmount;
-    fulfillment.payoutStatus = payoutStatusFor(order, fulfillment);
+    if (fulfillment.payoutStatus === "paid") {
+      // Already settled: the payout record is the source of truth.
+    } else if (net <= 0) {
+      fulfillment.payoutStatus = "cancelled";
+    } else {
+      fulfillment.payoutStatus = payoutStatusFor(order, fulfillment);
+    }
   }
 
   // Keep order-level money snapshots in step for legacy orders that were
@@ -210,10 +228,20 @@ export function deriveOrderStatus(order) {
 }
 
 // Advance one seller's fulfilment and re-derive the order status.
+// Each package keeps its own clocks: deliveredAt starts the return, report and
+// dispute windows, completedAt records the final state. Stamp once; never move
+// an existing stamp, so a later save cannot push the windows out.
+export function stampFulfilmentClock(fulfillment, status, when = new Date()) {
+  if (status === "delivered" && !fulfillment.deliveredAt) fulfillment.deliveredAt = when;
+  if (status === "completed" && !fulfillment.completedAt) fulfillment.completedAt = when;
+  return fulfillment;
+}
+
 export function setSellerFulfillmentStatus(order, sellerId, status, note, tracking = {}) {
   const fulfillment = getSellerFulfillment(order, sellerId);
   if (!fulfillment) return null;
   fulfillment.status = status;
+  stampFulfilmentClock(fulfillment, status);
   if (tracking.carrier !== undefined) fulfillment.carrier = String(tracking.carrier || "").slice(0, 80);
   if (tracking.trackingNumber !== undefined) fulfillment.trackingNumber = String(tracking.trackingNumber || "").slice(0, 120);
   fulfillment.statusHistory = fulfillment.statusHistory || [];
@@ -253,6 +281,7 @@ export function sellerOrderView(order, sellerId) {
     sellerCommissionAmount: fulfillment?.commissionAmount ?? 0,
     sellerPayoutAmount:
       fulfillment?.payoutAmount ?? subtotal,
+    sellerIsMultiSeller: isMultiSellerOrder(order),
     payoutStatus: payoutStatusFor(plain, fulfillment),
     sellerStatus: status,
     status,

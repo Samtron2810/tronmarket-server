@@ -1,6 +1,11 @@
-import paystackApi from "../config/paystack.js";
 import Order from "../models/Order.js";
 import Payment from "../models/Payment.js";
+import {
+  applyProviderRefundStatus,
+  findRefundByProviderData,
+  hasRefundRows,
+  refundRemainder,
+} from "./refundService.js";
 
 // ─── Shared Paystack payment rules ──────────────────────────────────────────
 // Both the browser verification endpoint and the Paystack webhook must make
@@ -226,6 +231,14 @@ export async function finalizeSuccessfulPayment({
   return { order: paidOrder, payment, transitioned };
 }
 
+// A charge refund moves the order's own refund state only when that charge is
+// the order's real payment (the order is paid with this reference), or the
+// order is already cancelled. Any other charge is refunded on its own.
+function tracksOrderRefund(order, payment) {
+  if (order.status === "cancelled") return true;
+  return Boolean(order.isPaid) && String(order.paymentReference || "") === String(payment.reference);
+}
+
 // Ask Paystack to refund the successful charge behind an order. Used both
 // when a paid order is cancelled and when a real charge arrives that can no
 // longer be applied (cancelled order, wrong amount, duplicate payment).
@@ -233,183 +246,41 @@ export async function finalizeSuccessfulPayment({
 export async function initiateRefundForOrder(
   orderInput,
   {
-    reason = "Order cancelled",
+    reason = "",
     payment: suppliedPayment = null,
-    // When given, the refund claim only succeeds while the order is still in
-    // one of these statuses — a concurrent status change (e.g. the order was
-    // shipped in the meantime) aborts before Paystack is called.
+    // Statuses the order must still be in for this refund to be taken (guards
+    // a cancel racing a shipment).
     expectedStatuses = null,
     // Refunds for charges that were never the order's payment (wrong
     // amount, duplicate second payment) are tracked on the Payment row
-    // only, so the order's own refund state stays clean for a later,
-    // legitimate payment or cancellation.
+    // only, so the order's own refund state stays clean.
     trackOnOrder = true,
   } = {},
 ) {
-  let order = await Order.findById(orderInput?._id || orderInput);
-  if (!order) throw paymentError("Order not found", 404);
-
-  if (trackOnOrder && order.refundStatus === "processed") {
-    const payment =
-      suppliedPayment ||
-      (await Payment.findOne({ order: order._id }).sort({ createdAt: -1 }));
-    if (payment && payment.status !== "refunded") {
-      payment.status = "refunded";
-      payment.refundReference = order.refundReference || payment.refundReference;
-      await payment.save();
-    }
-    return { order, payment, status: "processed", alreadyRequested: true };
-  }
-
-  // A previous attempt already reached Paystack; don't refund twice.
-  if (trackOnOrder && order.refundStatus === "pending" && order.refundReference) {
-    const payment =
-      suppliedPayment ||
-      (await Payment.findOne({ order: order._id }).sort({ createdAt: -1 }));
-    if (payment && payment.status !== "refunded") {
-      payment.status = "refund_pending";
-      payment.refundReference = order.refundReference || payment.refundReference;
-      await payment.save();
-    }
-    return { order, payment, status: "pending", alreadyRequested: true };
-  }
-
-  // Claim the refund attempt so parallel cancel requests can't both call
-  // Paystack for the same order.
-  if (trackOnOrder && order.refundStatus !== "pending") {
-    const claimed = await Order.findOneAndUpdate(
-      {
-        _id: order._id,
-        // null also matches orders saved before refundStatus existed.
-        refundStatus: { $in: ["none", "failed", null] },
-        ...(expectedStatuses ? { status: { $in: expectedStatuses } } : {}),
-      },
-      { $set: { refundStatus: "pending" } },
-      { new: true },
-    );
-    if (!claimed) {
-      const current = await Order.findById(order._id);
-      if (current?.refundStatus === "processed") {
-        return { order: current, payment: suppliedPayment, status: "processed", alreadyRequested: true };
-      }
-      throw paymentError("A refund is already being processed for this order", 409);
-    }
-    order = claimed;
-  }
-
-  let payment = suppliedPayment;
-  if (!payment && order.paymentReference) {
-    payment = await Payment.findOne({ reference: order.paymentReference });
-  }
-  if (!payment) {
-    payment = await Payment.findOne({
-      order: order._id,
-      status: { $in: ["success", "requires_refund", "refund_failed"] },
-    }).sort({ createdAt: -1 });
-  }
-  if (!payment && order.paymentReference) {
-    // Paid orders created before Payment rows existed still carry their
-    // Paystack reference on the order — recreate the binding so they can
-    // be refunded instead of being stranded.
-    try {
-      payment = await Payment.create({
-        order: order._id,
-        user: order.user,
-        amount: order.totalPrice,
-        currency: PAYMENT_CURRENCY,
-        reference: order.paymentReference,
-        status: "success",
-        paidAt: order.paidAt || new Date(),
-      });
-    } catch (error) {
-      if (error?.code !== 11000) throw error;
-      payment = await Payment.findOne({ reference: order.paymentReference });
-    }
-  }
-
-  if (!payment?.reference) {
-    if (trackOnOrder) {
-      await Order.updateOne(
-        { _id: order._id, refundStatus: "pending" },
-        { $set: { refundStatus: "failed" } },
-      );
-    }
+  const orderId = orderInput?._id || orderInput;
+  const current = await Order.findById(orderId).select("status").lean();
+  if (!current) throw paymentError("Order not found", 404);
+  if (expectedStatuses && !expectedStatuses.includes(current.status)) {
     throw paymentError(
-      "No successful Paystack payment was found for this order; refund it manually before cancelling",
+      "Order status changed while cancelling; please refresh and try again",
       409,
     );
   }
 
-  // Refund what was actually charged (for a verified payment that equals
-  // the order total; for a mismatched charge it is the smaller real amount).
-  const amountKobo =
-    Math.round(Number(payment.amount || 0) * 100) || expectedAmountKobo(order);
-  let refundData;
-  try {
-    const response = await paystackApi.post("/refund", {
-      transaction: payment.reference,
-      amount: amountKobo,
-      currency: PAYMENT_CURRENCY,
-      customer_note: reason,
-      merchant_note: `TronMarket refund for order ${order._id}`,
-    });
-    if (!response.data?.status || !response.data?.data) {
-      throw new Error(response.data?.message || "Paystack rejected the refund");
-    }
-    refundData = response.data.data;
-  } catch (error) {
-    if (trackOnOrder) {
-      await Order.updateOne(
-        { _id: order._id },
-        { $set: { refundStatus: "failed" } },
-      );
-    }
-    await Payment.updateOne(
-      { _id: payment._id },
-      { $set: { status: "refund_failed" } },
-    );
-    throw paymentError(
-      error.response?.data?.message ||
-        error.message ||
-        "Paystack refund request failed",
-      502,
-    );
-  }
-
-  const providerStatus = String(refundData.status || "pending").toLowerCase();
-  const processed = ["processed", "success", "succeeded"].includes(providerStatus);
-  const refundReference = String(
-    refundData.reference ||
-      refundData.transaction_reference ||
-      refundData.id ||
-      payment.reference,
-  );
-
-  const updatedOrder = trackOnOrder
-    ? await Order.findByIdAndUpdate(
-        order._id,
-        {
-          $set: {
-            refundStatus: processed ? "processed" : "pending",
-            refundReference,
-            refundAmount: amountKobo / 100,
-            ...(processed ? { refundedAt: new Date() } : {}),
-          },
-        },
-        { new: true },
-      )
-    : order;
-
-  payment.status = processed ? "refunded" : "refund_pending";
-  payment.refundReference = refundReference;
-  await payment.save();
-
+  // Refunds the rest of the charge (the refund ledger caps the total).
+  const result = await refundRemainder({
+    orderId,
+    reason,
+    kind: "order-cancel",
+    payment: suppliedPayment,
+    trackOnOrder,
+  });
   return {
-    order: updatedOrder,
-    payment,
-    refund: refundData,
-    status: processed ? "processed" : "pending",
-    alreadyRequested: false,
+    order: result.order,
+    payment: result.payment,
+    refund: result.providerData ?? null,
+    status: result.status,
+    alreadyRequested: result.alreadyRequested,
   };
 }
 
@@ -426,9 +297,7 @@ export async function flagPaymentForRefund({ order, payment, data, reason }) {
   await payment.save();
 
   try {
-    const trackOnOrder =
-      order.status === "cancelled" ||
-      String(order.paymentReference || "") === String(payment.reference);
+    const trackOnOrder = tracksOrderRefund(order, payment);
     const result = await initiateRefundForOrder(order, {
       reason,
       payment,
@@ -451,6 +320,19 @@ export async function flagPaymentForRefund({ order, payment, data, reason }) {
 // refund.processed / refund.failed) keep our refund state honest after the
 // initial refund request has been accepted.
 export async function applyRefundWebhook(data) {
+  // A refund we booked: update that row (and everything derived from it).
+  const refund = await findRefundByProviderData(data);
+  if (refund) return applyProviderRefundStatus(refund, data);
+
+  // A refund for a charge that has refund rows but no match by id. Do not fall
+  // through to the legacy path, which would set order-level state from it.
+  // Reconciliation settles it from Paystack.
+  const reference = data?.transaction_reference || data?.transaction?.reference;
+  if (reference && (await hasRefundRows(String(reference)))) {
+    console.warn(`Refund webhook for ${reference} matches no refund row; left for reconciliation`);
+    return null;
+  }
+
   const transactionReference =
     data?.transaction_reference || data?.transaction?.reference || data?.reference;
 
@@ -471,9 +353,7 @@ export async function applyRefundWebhook(data) {
 
   // Only the order's own payment drives the order-level refund state; a
   // refunded duplicate/mismatched charge is tracked on its Payment row.
-  const trackOnOrder =
-    order.status === "cancelled" ||
-    String(order.paymentReference || "") === String(payment.reference);
+  const trackOnOrder = tracksOrderRefund(order, payment);
 
   if (["processed", "success", "succeeded"].includes(providerStatus)) {
     payment.status = "refunded";
