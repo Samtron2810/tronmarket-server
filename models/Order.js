@@ -68,6 +68,14 @@ const sellerFulfillmentSchema = new mongoose.Schema(
       default: "not-eligible",
     },
     carrier: { type: String, trim: true, maxlength: 80, default: "" },
+    // Lifecycle clocks. deliveredAt drives the "not received" window and
+    // auto-complete; completedAt records the final state.
+    deliveredAt: { type: Date, default: null },
+    completedAt: { type: Date, default: null },
+    // The payout that settled this fulfilment (null = not paid out yet).
+    // Claimed atomically in payoutController so it can never be paid twice.
+    payoutId: { type: mongoose.Schema.Types.ObjectId, ref: "Payout", default: null },
+    paidOutAt: { type: Date, default: null },
     trackingNumber: { type: String, trim: true, maxlength: 120, default: "" },
     statusHistory: {
       type: [
@@ -199,6 +207,21 @@ const orderSchema = new mongoose.Schema(
     timestamps: true,
   },
 );
+
+// Stamp per-seller delivery/completion times on every save so the dispute
+// window and auto-complete run on a reliable clock. Legacy fulfilments fall
+// back to the order-level deliveredAt (or now).
+orderSchema.pre("save", function stampFulfilmentClocks(next) {
+  for (const f of this.sellerFulfillments || []) {
+    if (["delivered", "completed"].includes(f.status) && !f.deliveredAt) {
+      f.deliveredAt = this.deliveredAt || new Date();
+    }
+    if (f.status === "completed" && !f.completedAt) {
+      f.completedAt = new Date();
+    }
+  }
+  next();
+});
 
 orderSchema.index({ status: 1, paymentExpiresAt: 1 });
 orderSchema.index({ user: 1, createdAt: -1 });

@@ -57,6 +57,26 @@ const userSchema = new mongoose.Schema(
     sellerVerified: { type: Boolean, default: false },
 
     // ── Two-factor auth (TOTP; required-optional for admins) ────────────────
+    // Seller payout account. select:false keeps it out of ordinary user
+    // queries (public seller data, auth payloads); payout code opts in with
+    // "+bankDetails". Editing it clears verification so an admin must re-check
+    // the new account before any money is released.
+    bankDetails: {
+      type: new mongoose.Schema(
+        {
+          bankName: { type: String, trim: true, maxlength: 100, default: "" },
+          accountNumber: { type: String, trim: true, maxlength: 20, default: "" },
+          accountName: { type: String, trim: true, maxlength: 120, default: "" },
+          updatedAt: { type: Date, default: null },
+          verifiedAt: { type: Date, default: null },
+          verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+        },
+        { _id: false },
+      ),
+      select: false,
+      default: () => ({}),
+    },
+
     twoFactor: {
       enabled: { type: Boolean, default: false },
       secret: { type: String, default: null }, // base32 TOTP secret
