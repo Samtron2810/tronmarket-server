@@ -1,5 +1,4 @@
-import dotenv from "dotenv";
-dotenv.config();
+import "./config/env.js"; // must stay the first import (see config/env.js)
 
 const REQUIRED_ENV = ["MONGO_URI", "JWT_SECRET", "PAYSTACK_SECRET_KEY"];
 for (const key of REQUIRED_ENV) {
