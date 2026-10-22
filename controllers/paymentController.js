@@ -3,9 +3,12 @@ import paystackApi from "../config/paystack.js";
 import getAllowedOrigins from "../config/allowedOrigins.js";
 import Order from "../models/Order.js";
 import Payment from "../models/Payment.js";
-import User from "../models/User.js";
 import { sendOrderReceiptEmail } from "../emails/emailService.js";
 import { notifySellersOrderPaid } from "../services/orderNotificationService.js";
+import {
+  metadataOrderId,
+  settleChargeSuccess,
+} from "../services/chargeSettlementService.js";
 import {
   PAYMENT_CURRENCY,
   applyRefundWebhook,
@@ -61,18 +64,6 @@ function resolveCallbackUrl(requestedCallbackUrl) {
   } catch {
     return "http://localhost:5173/checkout";
   }
-}
-
-function metadataOrderId(data) {
-  let metadata = data?.metadata;
-  if (typeof metadata === "string") {
-    try {
-      metadata = JSON.parse(metadata);
-    } catch {
-      metadata = null;
-    }
-  }
-  return metadata?.orderId || metadata?.order_id || null;
 }
 
 // POST /api/payments/initialize — the server, never the browser, decides
@@ -405,97 +396,7 @@ export const paystackWebhook = async (req, res) => {
     }
 
     if (event?.event === "charge.success") {
-      const data = event.data || {};
-      const { reference } = data;
-      if (!reference) return res.sendStatus(200);
-
-      const boundPayment = await Payment.findOne({ reference });
-      const claimedOrderId = metadataOrderId(data);
-      if (
-        boundPayment &&
-        claimedOrderId &&
-        boundPayment.order.toString() !== String(claimedOrderId)
-      ) {
-        console.warn(
-          `Paystack webhook: reference ${reference} is bound to order ${boundPayment.order} but claims ${claimedOrderId}; ignoring`,
-        );
-        return res.sendStatus(200);
-      }
-
-      const orderId = boundPayment?.order || claimedOrderId;
-      if (!orderId) return res.sendStatus(200);
-
-      const order = await Order.findById(orderId);
-      if (!order) return res.sendStatus(200);
-
-      const buyer = await User.findById(order.user).select("name email").lean();
-
-      const payment = await claimPaymentRecord({
-        reference,
-        order,
-        userId: order.user,
-      });
-
-      if (data.status !== "success") {
-        payment.status = "failed";
-        await payment.save();
-        return res.sendStatus(200);
-      }
-
-      const validationError = validateSuccessfulTransaction(
-        data,
-        order,
-        reference,
-        buyer?.email,
-      );
-      if (validationError) {
-        await flagPaymentForRefund({
-          order,
-          payment,
-          data,
-          reason: validationError,
-        });
-        return res.sendStatus(200);
-      }
-
-      if (!order.isPaid && isPaymentAfterDeadline(order, data)) {
-        await flagPaymentForRefund({
-          order,
-          payment,
-          data,
-          reason: "Payment completed after the order payment deadline",
-        });
-        return res.sendStatus(200);
-      }
-
-      if (
-        (order.isPaid && order.paymentReference !== reference) ||
-        (!order.isPaid && order.status !== "pending")
-      ) {
-        await flagPaymentForRefund({
-          order,
-          payment,
-          data,
-          reason: order.isPaid
-            ? "Duplicate payment for an already paid order"
-            : `Payment received for a ${order.status} order`,
-        });
-        return res.sendStatus(200);
-      }
-
-      const { order: paidOrder, transitioned } =
-        await finalizeSuccessfulPayment({
-          order,
-          payment,
-          reference,
-          data,
-          source: "webhook",
-        });
-
-      if (transitioned && buyer?.email) {
-        sendOrderReceiptEmail(buyer.email, buyer.name, paidOrder.toObject());
-        void notifySellersOrderPaid(paidOrder);
-      }
+      await settleChargeSuccess(event.data || {}, { source: "webhook" });
     }
 
     return res.sendStatus(200);

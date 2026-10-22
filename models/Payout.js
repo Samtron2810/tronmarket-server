@@ -7,7 +7,8 @@ import mongoose from "mongoose";
 const settledFulfilmentSchema = new mongoose.Schema(
   {
     order: { type: mongoose.Schema.Types.ObjectId, ref: "Order", required: true },
-    sellerFulfillment: { type: mongoose.Schema.Types.ObjectId, required: true },
+    // The seller whose package this is (one fulfilment per seller per order).
+    seller: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     amount: { type: Number, required: true, min: 0 },
   },
   { _id: false },

@@ -1,7 +1,9 @@
 import axios from "axios";
 
+// PAYSTACK_BASE_URL exists so the money-path tests can point at a fake
+// Paystack HTTP server. Production leaves it unset.
 const paystackApi = axios.create({
-  baseURL: "https://api.paystack.co",
+  baseURL: process.env.PAYSTACK_BASE_URL || "https://api.paystack.co",
 });
 
 // Attach the secret key at request-time so it's read after dotenv has loaded,

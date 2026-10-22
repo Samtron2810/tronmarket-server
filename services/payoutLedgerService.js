@@ -23,7 +23,6 @@ import { money } from "./pricingService.js";
 
 export const SETTLEABLE = ["delivered", "completed"];
 const OPEN_RETURN = ["requested", "approved"];
-const ALL_OPEN_RETURN_STATES = ["requested", "approved", "refunded"];
 
 const key = (value) => (value ? String(value) : "");
 const ALL_SELLERS = "*"; // a return with no seller list covers every seller
@@ -51,8 +50,9 @@ export function classifyLedger({ orders, returns = [], disputes = [], sellerId =
   }
   for (const r of returns) {
     const sellers = (r.sellers || []).map(key);
-    if (r.status === "refunded") mark(refunded, key(r.order), sellers);
-    else if (OPEN_RETURN.includes(r.status)) mark(held, key(r.order), sellers);
+    // A refunded return no longer marks anything: its goods were already taken
+    // off the fulfilment (refundedSubtotal), so the payout is the net amount.
+    if (OPEN_RETURN.includes(r.status)) mark(held, key(r.order), sellers);
   }
 
   const isIn = (set, orderId, seller) =>
@@ -70,6 +70,7 @@ export function classifyLedger({ orders, returns = [], disputes = [], sellerId =
         held: 0,
         payable: 0,
         refunded: 0,
+        legacyManual: 0,
         fulfilments: 0,
       });
     }
@@ -92,6 +93,14 @@ export function classifyLedger({ orders, returns = [], disputes = [], sellerId =
         b.earned = money(b.earned + amount);
         continue;
       }
+      // A package fully refunded on a partial order has nothing left to pay.
+      // Never create a claim (or a zero payout) for it.
+      if (amount <= 0) continue;
+      // Legacy fulfilments are settled by hand, outside the ledger.
+      if (f.legacyManual) {
+        b.legacyManual = money(b.legacyManual + amount);
+        continue;
+      }
       if (order.refundStatus === "processed" || isIn(refunded, orderId, sellerKey)) {
         b.refunded = money(b.refunded + amount);
         continue;
@@ -107,7 +116,7 @@ export function classifyLedger({ orders, returns = [], disputes = [], sellerId =
         continue;
       }
       b.payable = money(b.payable + amount);
-      claims.push({ order: order._id, fulfilmentId: f._id, seller: f.seller, amount });
+      claims.push({ order: order._id, seller: f.seller, amount });
     }
   }
 
@@ -121,12 +130,12 @@ export async function loadLedger({ sellerId = null, now = new Date() } = {}) {
     : { "sellerFulfillments.status": { $in: SETTLEABLE } };
 
   const orders = await Order.find(orderFilter)
-    .select("status refundStatus deliveredAt createdAt updatedAt sellerFulfillments._id sellerFulfillments.seller sellerFulfillments.status sellerFulfillments.payoutAmount sellerFulfillments.payoutId sellerFulfillments.deliveredAt sellerFulfillments.completedAt")
+    .select("status refundStatus deliveredAt createdAt updatedAt sellerFulfillments._id sellerFulfillments.seller sellerFulfillments.status sellerFulfillments.payoutAmount sellerFulfillments.payoutId sellerFulfillments.legacyManual sellerFulfillments.deliveredAt sellerFulfillments.completedAt")
     .lean();
   const orderIds = orders.map((o) => o._id);
 
   const [returns, disputes] = await Promise.all([
-    ReturnRequest.find({ order: { $in: orderIds }, status: { $in: ALL_OPEN_RETURN_STATES } })
+    ReturnRequest.find({ order: { $in: orderIds }, status: { $in: OPEN_RETURN } })
       .select("order sellers status")
       .lean(),
     Dispute.find({ order: { $in: orderIds }, status: { $in: ["open", "upheld"] } })

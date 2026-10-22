@@ -4,10 +4,10 @@ import Product from "../models/Product.js";
 import User from "../models/User.js";
 import Coupon from "../models/Coupon.js";
 import ReturnRequest from "../models/ReturnRequest.js";
+import { refundReturnRequest } from "../services/refundService.js";
 import Payment from "../models/Payment.js";
 import { money } from "../services/pricingService.js";
 import { recordAudit } from "../services/auditService.js";
-import { initiateRefundForOrder } from "../services/paymentService.js";
 import { invalidateProductCache, cacheDel } from "../config/redis.js";
 
 function csvCell(value) {
@@ -270,42 +270,31 @@ export const reviewReturn = async (req, res) => {
       return res.json(request);
     }
 
-    // refund: the order must be a paid order; reuse the money-path refund.
-    const orderResult = await requestOrderForRefund(request);
-    if (orderResult.error) return res.status(orderResult.error.status).json({ message: orderResult.error.message });
-
-    const payment = await Payment.findOne({ order: orderResult.doc._id }).sort({ createdAt: -1 });
-    if (!payment?.reference) {
-      return res.status(409).json({ message: "No Paystack payment reference exists for this order" });
-    }
-
-    const refund = await initiateRefundForOrder(orderResult.doc, {
+    // refund: one refund per seller for the returned lines only. The shared
+    // refund engine caps amounts, updates each seller's payout, and skips
+    // sellers already refunded, so a retry after a failure is safe.
+    const result = await refundReturnRequest(request, {
       reason: `Return ${request._id}: ${request.reason}`.slice(0, 250),
-      payment,
-      expectedStatuses: PAID_STATUSES,
     });
+    const refunds = result.refunds.map((r) => r.refund).filter(Boolean);
+    const last = refunds[refunds.length - 1];
 
-    request.status = refund.status === "processed" ? "refunded" : "approved";
-    request.refundReference = refund.payment?.refundReference || payment.reference;
+    request.status = "refunded";
+    request.refundReference = last?.reference || request.refundReference || "";
     request.adminNote = String(req.body?.note || "").slice(0, 500);
     request.reviewedBy = req.user._id;
     await request.save();
-    await recordAudit(req, "return.refund", { type: "ReturnRequest", id: request._id }, { order: String(orderResult.doc._id), state: refund.status });
-    return res.json({ ...request.toObject(), refundState: refund.status });
+    const states = result.refunds.map((r) => r.status);
+    await recordAudit(req, "return.refund", { type: "ReturnRequest", id: request._id }, { order: String(request.order), states });
+    const refundState = states.includes("pending") ? "pending" : "processed";
+    return res.json({ ...request.toObject(), refundState });
   } catch (error) {
     console.error("reviewReturn:", error);
-    return res.status(500).json({ message: error.message || "Could not process this return" });
+    return res.status(error.status || error.statusCode || 500).json({
+      message: error.message || "Could not process this return",
+    });
   }
 };
-
-async function requestOrderForRefund(request) {
-  const doc = await mongoose.model("Order").findById(request.order);
-  if (!doc) return { error: { status: 409, message: "The linked order no longer exists" } };
-  if (!PAID_STATUSES.includes(doc.status)) {
-    return { error: { status: 409, message: "Only paid orders can be refunded from a return" } };
-  }
-  return { doc };
-}
 
 // ── Refund queue ────────────────────────────────────────────────────────────────
 export const refundQueue = async (req, res) => {

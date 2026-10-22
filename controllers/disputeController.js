@@ -6,6 +6,7 @@ import {
 } from "../services/orderFulfillmentService.js";
 import { POLICY, addDays } from "../services/orderPolicy.js";
 import { recordAudit } from "../services/auditService.js";
+import { refundDisputedPackage } from "../services/refundService.js";
 
 // A buyer's "not received" report, one per seller package. It is allowed
 // while the package is with the courier, claimed delivered, or delivered
@@ -109,8 +110,7 @@ export const listDisputes = async (req, res) => {
 
 // "release": the seller's delivery stands and they can be paid.
 // "uphold": the buyer's report stands, the seller is not paid for the package.
-// Upheld cases need a manual refund for that package; partial refunds are not
-// automated yet.
+// Upheld cases refund the seller's goods for that package to the buyer.
 export const resolveDispute = async (req, res) => {
   try {
     const dispute = await Dispute.findById(req.params.id);
@@ -135,6 +135,10 @@ export const resolveDispute = async (req, res) => {
       }
       dispute.status = "released";
     } else {
+      // Upheld: the seller's goods for that package are refunded first. If the
+      // refund cannot be requested the error propagates and the report stays
+      // open, so the decision and the money never disagree.
+      await refundDisputedPackage(dispute);
       dispute.status = "upheld";
     }
 
@@ -151,6 +155,7 @@ export const resolveDispute = async (req, res) => {
     return res.json(dispute);
   } catch (error) {
     console.error("resolveDispute:", error);
+    if (error.status) return res.status(error.status).json({ message: error.message });
     return res.status(500).json({ message: "Could not resolve the report" });
   }
 };

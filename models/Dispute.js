@@ -3,7 +3,7 @@ import mongoose from "mongoose";
 // A buyer's "not received" report about one seller's package in an order.
 // While it is open, that seller's payout for the package is held. An admin
 // resolves it: "released" lets the seller be paid, "upheld" keeps them unpaid
-// and the buyer is refunded (manually, for now; see the policy notes).
+// and refunds the buyer for that package through the refund engine.
 const disputeSchema = new mongoose.Schema(
   {
     order: { type: mongoose.Schema.Types.ObjectId, ref: "Order", required: true, index: true },

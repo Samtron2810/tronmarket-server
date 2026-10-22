@@ -31,6 +31,11 @@ import {
   orderReturnStatus,
 } from "../controllers/returnController.js";
 import { z } from "zod";
+import { cancelSellerPackage } from "../controllers/packageController.js";
+
+const packageCancelSchema = z.object({
+  reason: z.string().trim().max(300).optional(),
+});
 
 const createReturnSchema = z.object({
   reason: z.string().trim().min(3, "Tell us why you are returning this").max(300),
@@ -143,6 +148,16 @@ router.post(
     req.params.orderId = req.params.id;
     return createReturnRequest(req, res, next);
   },
+);
+
+// Seller cancels their own (unshipped) package when they cannot fulfil it.
+router.post(
+  "/:id/packages/cancel",
+  protect,
+  sellerOrAdmin,
+  validateObjectIdParams("id"),
+  validate(packageCancelSchema),
+  cancelSellerPackage,
 );
 
 export default router;

@@ -38,6 +38,8 @@ import payoutRoutes from "./routes/payoutRoutes.js";
 import disputeRoutes from "./routes/disputeRoutes.js";
 import couponRoutes from "./routes/couponRoutes.js";
 import deliveryStateRoutes from "./routes/deliveryStateRoutes.js";
+import messageRoutes from "./routes/messageRoutes.js";
+import { startPaymentReconciliationSweeper } from "./services/paymentReconciliationService.js";
 import { generalLimiter } from "./middlewares/rateLimiter.js";
 import { startOrderExpirySweeper } from "./services/orderExpiryService.js";
 import { startOrderLifecycleSweeper } from "./services/orderLifecycleService.js";
@@ -49,6 +51,7 @@ await connectDB();
 connectRedis().catch(() => {});
 startOrderExpirySweeper();
 startOrderLifecycleSweeper();
+startPaymentReconciliationSweeper();
 startRecoveryEmailJob();
 startImageCleanupJob();
 startProductRankingJob();
@@ -92,6 +95,7 @@ app.use("/api/payouts", payoutRoutes);
 app.use("/api/disputes", disputeRoutes);
 app.use("/api/coupons", couponRoutes);
 app.use("/api/delivery-states", deliveryStateRoutes);
+app.use("/api/messages", messageRoutes);
 
 app.use(errorMiddleware);
 

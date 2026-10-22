@@ -4,7 +4,7 @@ import Payout from "../models/Payout.js";
 import User from "../models/User.js";
 import ReturnRequest from "../models/ReturnRequest.js";
 import Dispute from "../models/Dispute.js";
-import { loadLedger } from "../services/payoutLedgerService.js";
+import { SETTLEABLE, loadLedger } from "../services/payoutLedgerService.js";
 import { money } from "../services/pricingService.js";
 import { recordAudit } from "../services/auditService.js";
 
@@ -28,13 +28,14 @@ function bankView(user, { reveal }) {
 }
 
 // True while anything still stops this seller's package from being paid:
-// an open dispute, an open or refunded return touching them, or a refund.
+// an open dispute, an open return touching them, or a refund in flight.
+// Refunded goods are already off the payout amount, so they don't hold it.
 async function isHeld(orderId, sellerId) {
   const [dispute, giveBack, order] = await Promise.all([
     Dispute.exists({ order: orderId, seller: sellerId, status: { $in: ["open", "upheld"] } }),
     ReturnRequest.exists({
       order: orderId,
-      status: { $in: ["requested", "approved", "refunded"] },
+      status: { $in: ["requested", "approved"] },
       $or: [{ sellers: sellerId }, { sellers: { $size: 0 } }, { sellers: { $exists: false } }],
     }),
     Order.findById(orderId).select("refundStatus").lean(),
@@ -45,7 +46,7 @@ async function isHeld(orderId, sellerId) {
 // Undo one fulfilment claim, but only if it is still held by this payout.
 async function releaseClaim(claim, payoutId) {
   await Order.updateOne(
-    { _id: claim.order, sellerFulfillments: { $elemMatch: { _id: claim.fulfilmentId, payoutId } } },
+    { _id: claim.order, sellerFulfillments: { $elemMatch: { seller: claim.seller, payoutId } } },
     {
       $set: {
         "sellerFulfillments.$.payoutId": null,
@@ -108,7 +109,21 @@ export const markPayoutPaid = async (req, res) => {
     const claimed = [];
     for (const c of candidates) {
       const result = await Order.updateOne(
-        { _id: c.order, sellerFulfillments: { $elemMatch: { _id: c.fulfilmentId, payoutId: null } } },
+        // Keyed by (order, seller): one fulfilment per seller per order. The
+        // amount must still be the one the ledger showed, so a refund that
+        // landed in between cannot be paid at the old figure.
+        {
+          _id: c.order,
+          sellerFulfillments: {
+            $elemMatch: {
+              seller: c.seller,
+              status: { $in: SETTLEABLE },
+              payoutAmount: c.amount,
+              payoutId: null,
+              legacyManual: { $ne: true },
+            },
+          },
+        },
         {
           $set: {
             "sellerFulfillments.$.payoutId": payoutId,
@@ -141,7 +156,7 @@ export const markPayoutPaid = async (req, res) => {
         seller: sellerId,
         amount,
         orderIds: [...new Set(payable.map((c) => String(c.order)))],
-        fulfilments: payable.map((c) => ({ order: c.order, sellerFulfillment: c.fulfilmentId, amount: c.amount })),
+        fulfilments: payable.map((c) => ({ order: c.order, seller: c.seller, amount: c.amount })),
         fulfilmentCount: payable.length,
         method: METHODS.includes(req.body?.method) ? req.body.method : "bank_transfer",
         note: String(req.body?.note || "").slice(0, 300),

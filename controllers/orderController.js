@@ -15,6 +15,7 @@ import {
   getSellerFulfillment,
   effectiveFulfillmentStatus,
   setSellerFulfillmentStatus,
+  stampFulfilmentClock,
   isMultiSellerOrder,
   sellerOrderView,
 } from "../services/orderFulfillmentService.js";
@@ -573,7 +574,7 @@ export const updateOrderStatus = async (req, res) => {
       if (status === "cancelled") {
         return res.status(403).json({
           message:
-            "Sellers cannot cancel a multi-seller order. Ask the customer or an admin to cancel it so the payment is handled correctly.",
+            "This order has items from several sellers. To cancel only your items (for example, out of stock), use Cancel my package so the refund covers just your share.",
         });
       }
 
@@ -917,7 +918,10 @@ export const confirmDelivery = async (req, res) => {
     order.status = "delivered";
     order.deliveredAt = new Date();
     for (const fulfillment of order.sellerFulfillments || []) {
-      if (fulfillment.status !== "cancelled") fulfillment.status = "delivered";
+      if (fulfillment.status !== "cancelled") {
+        fulfillment.status = "delivered";
+        stampFulfilmentClock(fulfillment, "delivered");
+      }
     }
     order.statusHistory.push({
       status: "delivered",
@@ -1030,6 +1034,7 @@ export const completeOrderManually = async (req, res) => {
     for (const fulfillment of order.sellerFulfillments || []) {
       if (fulfillment.status !== "cancelled") {
         fulfillment.status = "completed";
+        stampFulfilmentClock(fulfillment, "completed");
         fulfillment.statusHistory = fulfillment.statusHistory || [];
         fulfillment.statusHistory.push({
           status: "completed",

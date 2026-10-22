@@ -95,9 +95,11 @@ export async function runLifecycleSweep({ now = new Date(), limit = 200 } = {}) 
     }
   }
 
-  // 3. Paid, but nothing shipped by the deadline → cancel and refund. Orders
-  //    where some packages have already shipped are left alone (a partial
-  //    cancel needs partial refunds, which are not built yet).
+  // 3. Paid, but nothing shipped by the deadline → cancel and refund the whole
+  //    order (the refund engine returns every remaining goods value plus
+  //    shipping). Orders where some packages have already shipped are left
+  //    alone: a partial cancel of an unshipped package is a seller decision
+  //    (see packageController), not an automatic one.
   const stale = await Order.find({
     isPaid: true,
     status: { $in: ["paid", "processing"] },

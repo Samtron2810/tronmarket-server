@@ -76,6 +76,13 @@ const sellerFulfillmentSchema = new mongoose.Schema(
     // Claimed atomically in payoutController so it can never be paid twice.
     payoutId: { type: mongoose.Schema.Types.ObjectId, ref: "Payout", default: null },
     paidOutAt: { type: Date, default: null },
+    // Legacy fulfilment (delivered before the payout ledger) that the operator
+    // settles by hand. The ledger never claims it. Set by scripts/markLegacyManual.mjs.
+    legacyManual: { type: Boolean, default: false },
+    // Goods value (before the order discount) already refunded to the buyer
+    // for this seller's items. Commission and payout are computed on the
+    // remainder, so a refunded share is never paid out.
+    refundedSubtotal: { type: Number, default: 0, min: 0 },
     trackingNumber: { type: String, trim: true, maxlength: 120, default: "" },
     statusHistory: {
       type: [
@@ -160,7 +167,9 @@ const orderSchema = new mongoose.Schema(
     // be treated as fully cancelled until this leaves "pending".
     refundStatus: {
       type: String,
-      enum: ["none", "pending", "processed", "failed"],
+      // "partial": some packages/returns were refunded, the rest of the
+      // charge is still with the buyer. Per-refund detail lives in Refund.
+      enum: ["none", "pending", "partial", "processed", "failed"],
       default: "none",
     },
 

@@ -5,7 +5,6 @@ import User from "../models/User.js";
 import { isStateDeliverable, canonicalStateName } from "../services/deliveryStateService.js";
 import Product from "../models/Product.js";
 import Cart from "../models/Cart.js";
-import { sendOtpEmail } from "../emails/emailService.js";
 import {
   startSession,
   revokeAllSessions,
