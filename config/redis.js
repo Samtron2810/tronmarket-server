@@ -108,6 +108,11 @@ export function productCacheKey(params) {
   return `product:${JSON.stringify({
     s: q.search || "",
     c: q.category || "",
+    b: q.brand || "",
+    f: q.featured || "",
+    sp: q.sponsored || "",
+    so: q.sort || "",
+    seller: q.seller || "",
     min: q.min || "",
     max: q.max || "",
     p: q.page || 1,

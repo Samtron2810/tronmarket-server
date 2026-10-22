@@ -74,6 +74,22 @@ const productSchema = new mongoose.Schema(
       default: false,
     },
 
+    // ── Product Ranking & Display System ──────────────────────────
+    // isSponsored: a paid promotion (admin-controlled). While sponsored
+    // (and not past sponsoredUntil) the product outranks everything else.
+    isSponsored: { type: Boolean, default: false },
+    sponsoredUntil: { type: Date, default: null },
+    // Performance signals, maintained by the hourly ranking job from the
+    // Orders/Reviews collections (salesCount is also refreshed there).
+    salesCount: { type: Number, default: 0, min: 0 },
+    viewCount: { type: Number, default: 0, min: 0 },
+    // rankingScore is the single number the storefront sorts by in the
+    // "Recommended" (stable) display. It is ONLY recomputed by the hourly
+    // background job, never on page load, so the homepage order stays
+    // essentially fixed for hours at a time.
+    rankingScore: { type: Number, default: 0 },
+    rankingUpdatedAt: { type: Date, default: null },
+
     // Soft visibility switch. Products are deactivated (not deleted) when
     // their seller's account is removed, so historical carts/orders keep
     // working while the listing disappears from the storefront.
@@ -141,6 +157,8 @@ productSchema.index({ seller: 1, createdAt: -1 });
 productSchema.index({ category: 1, isActive: 1 });
 productSchema.index({ brand: 1 });
 productSchema.index({ isFeatured: 1, isActive: 1 });
+productSchema.index({ rankingScore: -1, createdAt: -1 });
+productSchema.index({ isSponsored: 1, sponsoredUntil: 1 });
 productSchema.index(
   { name: "text", description: "text", brand: "text", category: "text" },
   { weights: { name: 5, brand: 3, category: 2, description: 1 }, name: "product_text_search" },

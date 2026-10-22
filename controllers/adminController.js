@@ -30,6 +30,8 @@ const ALLOWED_PRODUCT_FIELDS = [
   "image",
   "images",
   "isFeatured",
+  "isSponsored",
+  "sponsoredUntil",
   "discountPercent",
   "isActive",
   "hasVariants",

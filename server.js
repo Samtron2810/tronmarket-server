@@ -40,12 +40,14 @@ import { generalLimiter } from "./middlewares/rateLimiter.js";
 import { startOrderExpirySweeper } from "./services/orderExpiryService.js";
 import { startRecoveryEmailJob } from "./services/opsEmailService.js";
 import { startImageCleanupJob } from "./services/imageCleanupService.js";
+import { startProductRankingJob } from "./services/productRankingService.js";
 
 await connectDB();
 connectRedis().catch(() => {});
 startOrderExpirySweeper();
 startRecoveryEmailJob();
 startImageCleanupJob();
+startProductRankingJob();
 
 const app = express();
 

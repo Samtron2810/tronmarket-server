@@ -208,6 +208,8 @@ const productObject = z.object({
     .optional()
     .default([]),
   isFeatured: z.boolean().optional(),
+  isSponsored: z.boolean().optional(),
+  sponsoredUntil: z.coerce.date().optional().nullable(),
   discountPercent: z
     .number({ error: "Discount must be a number" })
     .min(0, { error: "Discount cannot be negative" })
