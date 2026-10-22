@@ -20,6 +20,7 @@ import {
   deleteCloudinaryImages,
   removedImageUrls,
 } from "../services/cloudinaryCleanupService.js";
+import { evaluateStockChange } from "../services/stockAlertService.js";
 
 // No-Monopoly mixing for the homepage's default Recommended list: cap
 // how many products from one seller can claim the first pass of a page
@@ -216,6 +217,14 @@ export const getProducts = async (req, res) => {
     // SELLER — "more from this seller" on the product page
     if (seller && typeof seller === "string" && /^[a-fA-F0-9]{24}$/.test(seller)) {
       filter.seller = seller;
+    }
+
+    // OUT-OF-STOCK VISIBILITY: browsing surfaces (homepage sections,
+    // category pages, rails) never show products with zero stock. When
+    // the buyer explicitly searches by name, out-of-stock products may
+    // appear — badged, with Add to Cart disabled on the client.
+    if (!(search && typeof search === "string" && search.trim())) {
+      filter.stock = { $gt: 0 };
     }
 
     // PRICE RANGE
@@ -439,6 +448,12 @@ export const updateProduct = async (req, res) => {
 
     const updated = await Product.findById(req.params.id).populate("variants");
 
+    // Stock crossed a threshold through this edit (includes a seller
+    // manually zeroing stock after an offline sale).
+    if (updatePayload.stock !== undefined || req.body.variants !== undefined) {
+      void evaluateStockChange({ product: updated, previousStock: product.stock });
+    }
+
     if (
       updatePayload.image !== undefined ||
       updatePayload.images !== undefined
@@ -627,6 +642,7 @@ export const getRelatedProducts = async (req, res) => {
     const visible = {
       isActive: { $ne: false },
       isDraft: { $ne: true },
+      stock: { $gt: 0 },
       $or: [{ moderationStatus: "approved" }, { moderationStatus: { $exists: false } }],
     };
 

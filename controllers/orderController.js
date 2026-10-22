@@ -28,6 +28,8 @@ import {
   getCommissionRate,
 } from "../services/pricingService.js";
 import { notifyBuyerOrderStatus } from "../services/orderNotificationService.js";
+import { isStateDeliverable } from "../services/deliveryStateService.js";
+import { evaluateStockChange } from "../services/stockAlertService.js";
 import {
   evaluateCoupon,
   redeemCoupon,
@@ -37,6 +39,13 @@ import { recordAudit } from "../services/auditService.js";
 export const createOrder = async (req, res) => {
   try {
     const { shippingAddress, couponCode } = req.body;
+
+    // Delivery is only offered to states an admin has activated.
+    if (!(await isStateDeliverable(shippingAddress?.state))) {
+      return res.status(400).json({
+        message: `Delivery is currently not available to ${shippingAddress?.state || "the selected state"}. Please choose a different delivery state.`,
+      });
+    }
 
     const cart = await Cart.findOne({ user: req.user._id })
       .populate("items.product")
@@ -313,7 +322,14 @@ export const createOrder = async (req, res) => {
       ];
       for (const pid of affectedProductIds) {
         const doc = planned.find((l) => l.product.toString() === pid).productDoc;
+        const stockBeforeOrder = doc.stock;
         if (doc.hasVariants) await syncProductSummary(pid);
+        // Low-stock / out-of-stock seller alerts (fire-and-forget; the
+        // crossing check inside prevents repeat emails while low).
+        const fresh = await Product.findById(pid).select("name stock seller").lean();
+        if (fresh) {
+          void evaluateStockChange({ product: fresh, previousStock: stockBeforeOrder });
+        }
       }
 
       const sellerIds = [

@@ -28,13 +28,23 @@ const sellerRecipients = async (order) => {
     .lean();
 };
 
+const DELIVERY_INSTRUCTION =
+  "Delivery must be initiated within 2-3 days. The product must be delivered to the buyer within a maximum of 7 days from order date. After 7 days, late delivery will start counting against your store rating.";
+
 export async function notifySellersOrderPaid(order) {
   try {
     const sellers = await sellerRecipients(order);
+    const orderDate = new Date(order.createdAt || Date.now()).toLocaleString(
+      "en-NG",
+      { dateStyle: "medium", timeStyle: "short" },
+    );
     await Promise.all(
       sellers.map((seller) => {
         const view = sellerOrderView(order, seller._id);
         const fulfillment = getSellerFulfillment(order, seller._id);
+        // Privacy: before the seller accepts, they see only the buyer's
+        // delivery state + city — never the full street address.
+        const { state = "", city = "" } = order.shippingAddress || {};
         return sendEmailSafe({
           to: seller.email,
           subject: `New paid TronMarket order #${order._id}`,
@@ -45,7 +55,19 @@ export async function notifySellersOrderPaid(order) {
             status: fulfillment?.status || order.status,
             totalText: moneyText(view.sellerPayoutAmount),
             totalLabel: "Your payout after commission",
-            items: view.orderItems,
+            items: (view.orderItems || []).map((item) => ({
+              ...item,
+              productId: item.product ? String(item.product) : "",
+            })),
+            metaRows: [
+              ...(fulfillment?._id
+                ? [{ label: "Sub-order ID", value: String(fulfillment._id) }]
+                : []),
+              { label: "Order date", value: orderDate },
+              { label: "Delivery state", value: state || "—" },
+              { label: "Delivery city", value: city || "—" },
+            ],
+            notice: DELIVERY_INSTRUCTION,
           }),
         });
       }),

@@ -2,6 +2,7 @@ import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
+import { isStateDeliverable, canonicalStateName } from "../services/deliveryStateService.js";
 import Product from "../models/Product.js";
 import Cart from "../models/Cart.js";
 import { sendOtpEmail } from "../emails/emailService.js";
@@ -69,16 +70,30 @@ export const getMyProfile = async (req, res) => {
 };
 
 // ── Saved addresses ──────────────────────────────────────────────────────────
+const MAX_SAVED_ADDRESSES = 3;
+
 export const addAddress = async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
+    if ((user.savedAddresses?.length || 0) >= MAX_SAVED_ADDRESSES) {
+      return res.status(400).json({
+        message: `You can save up to ${MAX_SAVED_ADDRESSES} delivery addresses. Delete one before adding another.`,
+      });
+    }
+    // Addresses may only point at states an admin has made deliverable.
+    if (!(await isStateDeliverable(req.body.state))) {
+      return res.status(400).json({
+        message: `Delivery is currently not available to ${req.body.state || "that state"}.`,
+      });
+    }
     const address = {
       label: req.body.label || "Home",
       fullName: req.body.fullName,
       phone: req.body.phone,
       address: req.body.address,
       city: req.body.city,
-      state: req.body.state,
+      state: canonicalStateName(req.body.state) || req.body.state,
+      landmark: req.body.landmark || "",
       isDefault: Boolean(req.body.isDefault) || (user.savedAddresses?.length || 0) === 0,
     };
     if (address.isDefault) user.savedAddresses.forEach((a) => (a.isDefault = false));
@@ -95,8 +110,17 @@ export const updateAddress = async (req, res) => {
     const user = await User.findById(req.user._id);
     const address = user.savedAddresses.id(req.params.addressId);
     if (!address) return res.status(404).json({ message: "Address not found" });
-    for (const field of ["label", "fullName", "phone", "address", "city", "state"]) {
-      if (req.body[field] !== undefined) address[field] = req.body[field];
+    if (req.body.state !== undefined && !(await isStateDeliverable(req.body.state))) {
+      return res.status(400).json({
+        message: `Delivery is currently not available to ${req.body.state}.`,
+      });
+    }
+    for (const field of ["label", "fullName", "phone", "address", "city", "state", "landmark"]) {
+      if (req.body[field] !== undefined) {
+        address[field] = field === "state"
+          ? canonicalStateName(req.body[field]) || req.body[field]
+          : req.body[field];
+      }
     }
     if (req.body.isDefault) {
       user.savedAddresses.forEach((a) => (a.isDefault = false));

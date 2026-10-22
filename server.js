@@ -36,6 +36,7 @@ import categoryRoutes from "./routes/categoryRoutes.js";
 import wishlistRoutes from "./routes/wishlistRoutes.js";
 import payoutRoutes from "./routes/payoutRoutes.js";
 import couponRoutes from "./routes/couponRoutes.js";
+import deliveryStateRoutes from "./routes/deliveryStateRoutes.js";
 import { generalLimiter } from "./middlewares/rateLimiter.js";
 import { startOrderExpirySweeper } from "./services/orderExpiryService.js";
 import { startRecoveryEmailJob } from "./services/opsEmailService.js";
@@ -86,6 +87,7 @@ app.use("/api/categories", categoryRoutes);
 app.use("/api/wishlist", wishlistRoutes);
 app.use("/api/payouts", payoutRoutes);
 app.use("/api/coupons", couponRoutes);
+app.use("/api/delivery-states", deliveryStateRoutes);
 
 app.use(errorMiddleware);
 

@@ -119,6 +119,7 @@ const orderSchema = new mongoose.Schema(
       address: String,
       city: String,
       state: String,
+      landmark: String,
     },
 
     paymentMethod: {
