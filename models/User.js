@@ -8,6 +8,7 @@ const savedAddressSchema = new mongoose.Schema(
     address: { type: String, required: true, trim: true, maxlength: 300 },
     city: { type: String, required: true, trim: true, maxlength: 80 },
     state: { type: String, required: true, trim: true, maxlength: 80 },
+    landmark: { type: String, trim: true, maxlength: 200, default: "" },
     isDefault: { type: Boolean, default: false },
   },
   { timestamps: true },

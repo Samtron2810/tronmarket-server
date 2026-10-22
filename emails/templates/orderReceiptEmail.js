@@ -78,6 +78,9 @@ export function orderReceiptHtml(order, customerName) {
               <p style="margin:0;font-size:14px;color:#555555;line-height:1.6;">
                 Hi ${customerName}, thank you for shopping with TronMarket. Here's a summary of your order.
               </p>
+              <p style="margin:12px 0 0;font-size:14px;color:#555555;line-height:1.6;">
+                Your order has been received. Your items are being prepared by the sellers and will be delivered within 3-7 days. You will receive updates.
+              </p>
             </td>
           </tr>
 
@@ -88,6 +91,7 @@ export function orderReceiptHtml(order, customerName) {
                 <tr>
                   <td width="50%" style="vertical-align:top;padding-right:16px;">
                     <p style="margin:0 0 8px;font-size:11px;font-weight:700;color:#888888;text-transform:uppercase;letter-spacing:1px;">Order Info</p>
+                    <p style="margin:0 0 4px;font-size:13px;color:#1A1A1A;"><strong>Order ID:</strong> #${order._id || shortId}</p>
                     <p style="margin:0 0 4px;font-size:13px;color:#1A1A1A;"><strong>Date:</strong> ${dateFormatted}</p>
                     <p style="margin:0 0 4px;font-size:13px;color:#1A1A1A;"><strong>Payment:</strong> Paystack</p>
                     <p style="margin:0;font-size:13px;color:#1A1A1A;"><strong>Status:</strong>

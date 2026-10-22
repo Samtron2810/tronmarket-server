@@ -20,6 +20,28 @@ import {
   deleteCloudinaryImages,
   removedImageUrls,
 } from "../services/cloudinaryCleanupService.js";
+import { evaluateStockChange } from "../services/stockAlertService.js";
+
+// No-Monopoly mixing for the homepage's default Recommended list: cap
+// how many products from one seller can claim the first pass of a page
+// (their remaining products follow in score order), so a single vendor
+// with a big catalogue cannot fill the whole first screen.
+function diversifyBySeller(products, maxPerSeller = 2) {
+  const counts = new Map();
+  const firstPass = [];
+  const deferred = [];
+  for (const product of products) {
+    const sellerId = String(product.seller?._id || product.seller || "");
+    const seen = counts.get(sellerId) || 0;
+    if (seen < maxPerSeller) {
+      counts.set(sellerId, seen + 1);
+      firstPass.push(product);
+    } else {
+      deferred.push(product);
+    }
+  }
+  return [...firstPass, ...deferred];
+}
 
 // ── CACHE TTL SETTINGS ──
 // Reduce from 5 minutes to 1.5 minutes (90 seconds) so stock changes
@@ -36,6 +58,13 @@ export const createProduct = async (req, res) => {
       // Featuring is an admin merchandising decision. A seller-supplied
       // isFeatured flag is ignored rather than allowed to self-promote.
       isFeatured: req.user.role === "admin" ? Boolean(rest.isFeatured) : false,
+      // Sponsorship is a paid, admin-granted promotion — sellers can
+      // never self-sponsor through the create payload either.
+      isSponsored: req.user.role === "admin" ? Boolean(rest.isSponsored) : false,
+      sponsoredUntil:
+        req.user.role === "admin" && rest.sponsoredUntil
+          ? new Date(rest.sponsoredUntil)
+          : null,
       // New seller listings enter the moderation queue; admin listings and
       // drafts are handled directly.
       isDraft: Boolean(rest.isDraft),
@@ -113,7 +142,7 @@ export const getStorefrontMeta = async (req, res) => {
 
 export const getProducts = async (req, res) => {
   try {
-    const { search, category, brand, featured, seller, sort, min, max, page = 1, limit = 6 } = req.query;
+    const { search, category, brand, featured, sponsored, seller, sort, min, max, page = 1, limit = 6 } = req.query;
 
     // Try to get from cache first
     // Cache key is based on all filter parameters so different searches
@@ -173,9 +202,29 @@ export const getProducts = async (req, res) => {
       filter.isFeatured = true;
     }
 
+    // SPONSORED — only promotions still inside their paid window.
+    if (sponsored === "1" || sponsored === "true") {
+      filter.isSponsored = true;
+      filter.$and.push({
+        $or: [
+          { sponsoredUntil: null },
+          { sponsoredUntil: { $exists: false } },
+          { sponsoredUntil: { $gt: new Date() } },
+        ],
+      });
+    }
+
     // SELLER — "more from this seller" on the product page
     if (seller && typeof seller === "string" && /^[a-fA-F0-9]{24}$/.test(seller)) {
       filter.seller = seller;
+    }
+
+    // OUT-OF-STOCK VISIBILITY: browsing surfaces (homepage sections,
+    // category pages, rails) never show products with zero stock. When
+    // the buyer explicitly searches by name, out-of-stock products may
+    // appear — badged, with Add to Cart disabled on the client.
+    if (!(search && typeof search === "string" && search.trim())) {
+      filter.stock = { $gt: 0 };
     }
 
     // PRICE RANGE
@@ -196,22 +245,44 @@ export const getProducts = async (req, res) => {
     const perPage = Math.min(50, Math.max(Number(limit) || 6, 1));
     const skip = (pageNum - 1) * perPage;
 
+    // Display logic A — STABLE (homepage, category, search): the default
+    // "Recommended" sort orders by rankingScore, which only changes when
+    // the hourly ranking job runs, so the arrangement barely moves
+    // between refreshes. Every sort carries a deterministic tie-break so
+    // equal products never swap places randomly either.
     const sortMap = {
-      newest: { createdAt: -1 },
-      "price-asc": { price: 1 },
-      "price-desc": { price: -1 },
-      name: { name: 1 },
-      rating: { rating: -1 },
+      recommended: { rankingScore: -1, createdAt: -1, _id: -1 },
+      popular: { salesCount: -1, rankingScore: -1, _id: -1 },
+      newest: { createdAt: -1, _id: -1 },
+      "price-asc": { price: 1, _id: 1 },
+      "price-desc": { price: -1, _id: -1 },
+      name: { name: 1, _id: 1 },
+      rating: { rating: -1, numReviews: -1, _id: -1 },
     };
-    const sortSpec = sortMap[sort] || { createdAt: -1 };
+    const sortSpec = sortMap[sort] || sortMap.recommended;
 
     const total = await Product.countDocuments(filter);
 
-    const products = await Product.find(filter)
+    let products = await Product.find(filter)
       .sort(sortSpec)
       .skip(skip)
       .limit(perPage)
       .populate("seller", "name email role sellerVerified");
+
+    // No-Monopoly mixing applies to the homepage's default view only
+    // (no search/category/brand/seller/rail filters, Recommended sort).
+    // Filtered and manually sorted lists keep pure score/order semantics.
+    const isHomepageDefault =
+      !search &&
+      !category &&
+      !brand &&
+      !seller &&
+      !(featured === "1" || featured === "true") &&
+      !(sponsored === "1" || sponsored === "true") &&
+      (!sort || sort === "recommended");
+    if (isHomepageDefault) {
+      products = diversifyBySeller(products);
+    }
 
     const result = {
       products,
@@ -243,6 +314,10 @@ export const getProduct = async (req, res) => {
       if (!ownerCached && (cached.isDraft || cached.moderationStatus === "pending" || cached.moderationStatus === "rejected")) {
         return res.status(404).json({ message: "Product not found" });
       }
+      if (!ownerCached) {
+        // Fire-and-forget view signal for the ranking job.
+        Product.updateOne({ _id: id }, { $inc: { viewCount: 1 } }).catch(() => {});
+      }
       return res.json(cached);
     }
 
@@ -261,6 +336,11 @@ export const getProduct = async (req, res) => {
       (req.user.role === "admin" || String(product.seller?._id || product.seller) === String(req.user._id));
     if (!isOwnerOrAdmin && (product.isDraft || product.moderationStatus === "pending" || product.moderationStatus === "rejected")) {
       return res.status(404).json({ message: "Product not found" });
+    }
+
+    if (!isOwnerOrAdmin) {
+      // Fire-and-forget view signal for the ranking job.
+      Product.updateOne({ _id: product._id }, { $inc: { viewCount: 1 } }).catch(() => {});
     }
 
     // Cache single product for 5 minutes
@@ -315,6 +395,14 @@ export const updateProduct = async (req, res) => {
     if (req.user.role === "admin" && req.body.isFeatured !== undefined) {
       updatePayload.isFeatured = Boolean(req.body.isFeatured);
     }
+    if (req.user.role === "admin" && req.body.isSponsored !== undefined) {
+      updatePayload.isSponsored = Boolean(req.body.isSponsored);
+    }
+    if (req.user.role === "admin" && req.body.sponsoredUntil !== undefined) {
+      updatePayload.sponsoredUntil = req.body.sponsoredUntil
+        ? new Date(req.body.sponsoredUntil)
+        : null;
+    }
 
     if (updatePayload.images && updatePayload.images.length > 0) {
       updatePayload.image = updatePayload.images[0];
@@ -359,6 +447,12 @@ export const updateProduct = async (req, res) => {
     }
 
     const updated = await Product.findById(req.params.id).populate("variants");
+
+    // Stock crossed a threshold through this edit (includes a seller
+    // manually zeroing stock after an offline sale).
+    if (updatePayload.stock !== undefined || req.body.variants !== undefined) {
+      void evaluateStockChange({ product: updated, previousStock: product.stock });
+    }
 
     if (
       updatePayload.image !== undefined ||
@@ -534,23 +628,64 @@ export const getSellerLowStock = async (req, res) => {
   }
 };
 
-// Related products: same category first, then same brand.
+// Related products — Display logic B (SHUFFLED): recommendations are
+// deliberately re-randomised on every request via $sample, so all
+// sellers in the category get discovery rotation instead of the same
+// top few products winning every visit. Same category first; same-brand
+// products from other categories top the list up when the category is
+// small. (Unlike the stable storefront lists, this is never cached.)
 export const getRelatedProducts = async (req, res) => {
   try {
     const product = await Product.findById(req.params.id).select("category brand").lean();
     if (!product) return res.status(404).json({ message: "Product not found" });
-    const base = { _id: { $ne: req.params.id }, isActive: { $ne: false }, isDraft: { $ne: true }, $or: [{ moderationStatus: "approved" }, { moderationStatus: { $exists: false } }] };
-    const [sameCategory, sameBrand] = await Promise.all([
-      Product.find({ ...base, category: product.category }).limit(6).populate("seller", "name sellerVerified").populate("variants").lean(),
-      Product.find({ ...base, brand: product.brand, category: { $ne: product.category } }).limit(3).populate("seller", "name sellerVerified").populate("variants").lean(),
-    ]);
-    const seen = new Set();
-    const related = [...sameCategory, ...sameBrand].filter((p) => {
-      if (seen.has(String(p._id))) return false;
-      seen.add(String(p._id));
-      return true;
-    }).slice(0, 8);
-    return res.json(related);
+
+    const visible = {
+      isActive: { $ne: false },
+      isDraft: { $ne: true },
+      stock: { $gt: 0 },
+      $or: [{ moderationStatus: "approved" }, { moderationStatus: { $exists: false } }],
+    };
+
+    const sampleIds = async (match, size) => {
+      if (size <= 0) return [];
+      const rows = await Product.aggregate([
+        { $match: match },
+        { $sample: { size } },
+        { $project: { _id: 1 } },
+      ]);
+      return rows.map((r) => r._id);
+    };
+
+    const categoryIds = await sampleIds(
+      { ...visible, _id: { $ne: product._id }, category: product.category },
+      6,
+    );
+
+    let brandIds = [];
+    if (categoryIds.length < 6 && product.brand) {
+      brandIds = await sampleIds(
+        {
+          ...visible,
+          _id: { $ne: product._id, $nin: categoryIds },
+          brand: product.brand,
+          category: { $ne: product.category },
+        },
+        6 - categoryIds.length,
+      );
+    }
+
+    const orderedIds = [...categoryIds, ...brandIds].slice(0, 8);
+    if (!orderedIds.length) return res.json([]);
+
+    const docs = await Product.find({ _id: { $in: orderedIds } })
+      .populate("seller", "name sellerVerified")
+      .populate("variants")
+      .lean();
+    const byId = new Map(docs.map((d) => [String(d._id), d]));
+    // Restore the shuffled order (find() returns storage order).
+    return res.json(
+      orderedIds.map((id) => byId.get(String(id))).filter(Boolean),
+    );
   } catch (error) {
     return res.status(500).json({ message: "Failed to load related products" });
   }

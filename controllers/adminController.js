@@ -18,6 +18,7 @@ import {
   deleteCloudinaryImages,
   removedImageUrls,
 } from "../services/cloudinaryCleanupService.js";
+import { evaluateStockChange } from "../services/stockAlertService.js";
 
 // FIX #2: Explicit whitelist of product fields an admin may set
 const ALLOWED_PRODUCT_FIELDS = [
@@ -30,6 +31,8 @@ const ALLOWED_PRODUCT_FIELDS = [
   "image",
   "images",
   "isFeatured",
+  "isSponsored",
+  "sponsoredUntil",
   "discountPercent",
   "isActive",
   "hasVariants",
@@ -443,6 +446,10 @@ export const updateProductForUser = async (req, res) => {
     const updated = await Product.findById(
       req.params.productId,
     ).populate("variants");
+
+    if (updatePayload.stock !== undefined || variants !== undefined) {
+      void evaluateStockChange({ product: updated, previousStock: product.stock });
+    }
 
     if (
       updatePayload.image !== undefined ||

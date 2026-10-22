@@ -375,6 +375,13 @@ export const bulkProducts = async (req, res) => {
       draft: { isDraft: true, isActive: false },
       feature: { isFeatured: true },
       unfeature: { isFeatured: false },
+      // Paid promotion window: sponsoring grants 30 days of top-tier
+      // ranking (see services/productRankingService.js).
+      sponsor: {
+        isSponsored: true,
+        sponsoredUntil: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      },
+      unsponsor: { isSponsored: false, sponsoredUntil: null },
     };
     if (action === "delete") {
       const result = await Product.deleteMany({ _id: { $in: ids } });

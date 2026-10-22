@@ -92,6 +92,7 @@ export const savedAddressSchema = z.object({
   address: z.string().trim().min(5, "Address is required"),
   city: z.string().trim().min(2, "City is required"),
   state: z.string().trim().min(2, "State is required"),
+  landmark: z.string().trim().max(200).optional(),
   isDefault: z.boolean().optional(),
 });
 

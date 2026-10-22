@@ -21,6 +21,7 @@ export const shippingAddressSchema = z.object({
     .string({ error: "State is required" })
     .trim()
     .min(2, { error: "State must be at least 2 characters" }),
+  landmark: z.string().trim().max(200).optional(),
 });
 
 export const createOrderSchema = z.object({
