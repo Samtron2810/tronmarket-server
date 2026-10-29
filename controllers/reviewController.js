@@ -1,7 +1,7 @@
 import mongoose from "mongoose";
-import Order from "../models/Order.js";
 import Product from "../models/Product.js";
 import Review from "../models/Review.js";
+import { canReviewProduct } from "../services/reviewEligibilityService.js";
 
 function publicReview(review) {
   return {
@@ -9,7 +9,7 @@ function publicReview(review) {
     product: review.product,
     rating: review.rating,
     title: review.title,
-    body: review.body,
+    body: review.body || review.comment || "",
     verifiedPurchase: review.verifiedPurchase,
     isHidden: review.isHidden,
     user: review.user?._id
@@ -60,13 +60,11 @@ export const createOrUpdateReview = async (req, res) => {
     const productExists = await Product.exists({ _id: req.params.id });
     if (!productExists) return res.status(404).json({ message: "Product not found" });
 
-    const verifiedPurchase = Boolean(
-      await Order.exists({
-        user: req.user._id,
-        "items.product": req.params.id,
-        status: "delivered",
-      }),
-    );
+    if (!(await canReviewProduct(req.user._id, req.params.id))) {
+      return res
+        .status(403)
+        .json({ message: "Only buyers with a delivered order for this product can review it" });
+    }
 
     const review = await Review.findOneAndUpdate(
       { product: req.params.id, user: req.user._id },
@@ -75,7 +73,7 @@ export const createOrUpdateReview = async (req, res) => {
           rating: Number(req.body.rating),
           title: String(req.body.title || "").slice(0, 120),
           body: String(req.body.body || "").slice(0, 2000),
-          verifiedPurchase,
+          verifiedPurchase: true,
           isHidden: false,
         },
       },
@@ -97,7 +95,18 @@ export const deleteReview = async (req, res) => {
   }
 };
 
-// product ids the signed-in user already reviewed (frontend uses this to prefill)
+// Whether the signed-in user may post a review for this product. The form
+// uses this to show either the review editor or "Buy this product to review it".
+export const reviewEligibility = async (req, res) => {
+  try {
+    const canReview = await canReviewProduct(req.user._id, req.params.id);
+    return res.json({ canReview });
+  } catch (error) {
+    return res.status(500).json({ message: "Could not check review eligibility" });
+  }
+};
+
+// the signed-in user's own review of this product (frontend uses this to prefill)
 export const myProductReview = async (req, res) => {
   try {
     const review = await Review.findOne({ product: req.params.id, user: req.user._id }).populate("user", "name").lean();

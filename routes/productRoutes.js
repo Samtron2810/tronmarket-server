@@ -16,6 +16,7 @@ import {
   createOrUpdateReview,
   deleteReview,
   myProductReview,
+  reviewEligibility,
 } from "../controllers/reviewController.js";
 import { protect, sellerOnly, optionalAuth } from "../middlewares/authMiddleware.js";
 import { validate } from "../middlewares/validate.js";
@@ -54,6 +55,7 @@ router.post("/stock-check", stockCheck);
 // Reviews
 router.get("/:id/reviews", validateObjectIdParams("id"), listProductReviews);
 router.get("/:id/reviews/mine", protect, validateObjectIdParams("id"), myProductReview);
+router.get("/:id/reviews/eligibility", protect, validateObjectIdParams("id"), reviewEligibility);
 router.post(
   "/:id/reviews",
   protect,

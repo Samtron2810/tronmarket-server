@@ -97,6 +97,7 @@ export async function bootstrap() {
     ReturnRequest: (await import("../../models/ReturnRequest.js")).default,
     OrderMessage: (await import("../../models/OrderMessage.js")).default,
     Payout: (await import("../../models/Payout.js")).default,
+    Review: (await import("../../models/Review.js")).default,
   };
   const fulfilment = await import("../../services/orderFulfillmentService.js");
   const services = {
@@ -117,6 +118,7 @@ export async function bootstrap() {
     messages: await import("../../controllers/messageController.js"),
     returns: await import("../../controllers/returnController.js"),
     admin: await import("../../controllers/adminOpsController.js"),
+    reviews: await import("../../controllers/reviewController.js"),
   };
 
   async function resetDb() {

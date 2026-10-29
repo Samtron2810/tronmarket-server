@@ -6,8 +6,11 @@ const reviewSchema = new mongoose.Schema(
     user: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     rating: { type: Number, required: true, min: 1, max: 5 },
     title: { type: String, trim: true, maxlength: 120, default: "" },
+    // The review text. `comment` is the old field name: rows saved under it
+    // are still read (see publicReview) but nothing writes it any more.
+    body: { type: String, trim: true, maxlength: 2000, default: "" },
     comment: { type: String, trim: true, maxlength: 2000, default: "" },
-    // True when the reviewer has a delivered/completed order containing the product.
+    // Set only when the reviewer has a delivered/completed package with the product.
     verifiedPurchase: { type: Boolean, default: false },
   },
   { timestamps: true },
