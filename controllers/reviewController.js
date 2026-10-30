@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import Product from "../models/Product.js";
 import Review from "../models/Review.js";
 import { canReviewProduct } from "../services/reviewEligibilityService.js";
+import { syncProductReviewStats } from "../services/reviewStatsService.js";
 
 function publicReview(review) {
   return {
@@ -21,13 +22,13 @@ function publicReview(review) {
 
 export const listProductReviews = async (req, res) => {
   try {
-    const reviews = await Review.find({ product: req.params.id, isHidden: false })
+    const reviews = await Review.find({ product: req.params.id, isHidden: { $ne: true } })
       .sort({ createdAt: -1 })
       .limit(50)
       .populate("user", "name")
       .lean();
     const stats = await Review.aggregate([
-      { $match: { product: new mongoose.Types.ObjectId(req.params.id), isHidden: false } },
+      { $match: { product: new mongoose.Types.ObjectId(req.params.id), isHidden: { $ne: true } } },
       {
         $group: {
           _id: null,
@@ -66,6 +67,11 @@ export const createOrUpdateReview = async (req, res) => {
         .json({ message: "Only buyers with a delivered order for this product can review it" });
     }
 
+    const existing = await Review.findOne({ product: req.params.id, user: req.user._id }).select("isHidden").lean();
+    if (existing?.isHidden) {
+      return res.status(403).json({ message: "This review was removed by moderation and cannot be changed" });
+    }
+
     const review = await Review.findOneAndUpdate(
       { product: req.params.id, user: req.user._id },
       {
@@ -74,11 +80,11 @@ export const createOrUpdateReview = async (req, res) => {
           title: String(req.body.title || "").slice(0, 120),
           body: String(req.body.body || "").slice(0, 2000),
           verifiedPurchase: true,
-          isHidden: false,
         },
       },
       { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true },
     ).populate("user", "name");
+    await syncProductReviewStats(req.params.id);
     return res.status(201).json(publicReview(review));
   } catch (error) {
     return res.status(400).json({ message: error.message || "Could not save the review" });
@@ -89,6 +95,7 @@ export const deleteReview = async (req, res) => {
   try {
     const deleted = await Review.findOneAndDelete({ _id: req.params.reviewId, user: req.user._id });
     if (!deleted) return res.status(404).json({ message: "Review not found" });
+    await syncProductReviewStats(deleted.product);
     return res.json({ success: true });
   } catch (error) {
     return res.status(500).json({ message: "Could not delete the review" });

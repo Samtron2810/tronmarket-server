@@ -14,6 +14,11 @@ import {
   getAuditLogs,
 } from "../controllers/adminController.js";
 import { protect, adminOnly } from "../middlewares/authMiddleware.js";
+import {
+  listAdminReviews,
+  setReviewHidden,
+  deleteAdminReview,
+} from "../controllers/adminReviewController.js";
 import { validate } from "../middlewares/validate.js";
 import {
   updateRoleSchema,
@@ -170,6 +175,9 @@ router.patch(
 
 // Product moderation
 router.get("/moderation", protect, adminOnly, moderationQueue);
+router.get("/reviews", protect, adminOnly, listAdminReviews);
+router.patch("/reviews/:id", protect, adminOnly, validateObjectIdParams("id"), setReviewHidden);
+router.delete("/reviews/:id", protect, adminOnly, validateObjectIdParams("id"), deleteAdminReview);
 router.patch(
   "/moderation/:id",
   protect,

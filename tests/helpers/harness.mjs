@@ -119,6 +119,7 @@ export async function bootstrap() {
     returns: await import("../../controllers/returnController.js"),
     admin: await import("../../controllers/adminOpsController.js"),
     reviews: await import("../../controllers/reviewController.js"),
+    adminReviews: await import("../../controllers/adminReviewController.js"),
   };
 
   async function resetDb() {

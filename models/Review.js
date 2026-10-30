@@ -12,6 +12,10 @@ const reviewSchema = new mongoose.Schema(
     comment: { type: String, trim: true, maxlength: 2000, default: "" },
     // Set only when the reviewer has a delivered/completed package with the product.
     verifiedPurchase: { type: Boolean, default: false },
+    // Set by an admin when hiding a review. A hidden review is not shown, is not
+    // counted in the rating, and cannot be edited by its author.
+    isHidden: { type: Boolean, default: false },
+    moderationReason: { type: String, trim: true, maxlength: 300, default: "" },
   },
   { timestamps: true },
 );
